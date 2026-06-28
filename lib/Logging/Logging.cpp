@@ -16,6 +16,10 @@ RTC_NOINIT_ATTR size_t logHead = 0;
 RTC_NOINIT_ATTR uint32_t rtcLogMagic;
 static constexpr uint32_t LOG_RTC_MAGIC = 0xDEADBEEF;
 
+// When true, logPrintf skips writing to serial (still records to the ring buffer).
+static volatile bool serialLogMuted = false;
+void setSerialLogMuted(bool muted) { serialLogMuted = muted; }
+
 void addToLogRingBuffer(const char* message) {
   // Add the message to the ring buffer, overwriting old messages if necessary.
   // If the magic is wrong or logHead is out of range (RTC_NOINIT_ATTR garbage
@@ -59,7 +63,7 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
     }
   }
   va_end(args);
-  if (logSerial) {
+  if (logSerial && !serialLogMuted) {
     logSerial.print(buf);
   }
   addToLogRingBuffer(buf);

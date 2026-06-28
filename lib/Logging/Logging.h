@@ -31,6 +31,11 @@ static HWCDC& logSerial = Serial;
 
 void logPrintf(const char* level, const char* origin, const char* format, ...);
 
+// When muted, logPrintf still records to the RTC crash ring buffer but does NOT
+// write to the serial port. Used to keep the serial stream clean during binary
+// transfers (screenshots, USB file transfer) so log lines can't corrupt a frame.
+void setSerialLogMuted(bool muted);
+
 #ifdef ENABLE_SERIAL_LOG
 #if LOG_LEVEL >= 0
 #define LOG_ERR(origin, format, ...) logPrintf("ERR", origin, format "\n", ##__VA_ARGS__)

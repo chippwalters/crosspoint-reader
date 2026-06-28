@@ -29,6 +29,7 @@
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "crypto/VaultCrypto.h"
+#include "network/SerialFileTransfer.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -313,6 +314,10 @@ void setup() {
   // and the host has to be physically replugged for logs to flow. Warm reboot
   // worked without the delay because USB was already enumerated.
   delay(250);
+  // USB-serial file transfer (SerialFileTransfer): the default HWCDC RX buffer is
+  // tiny (~256 B), so a 4 KB host->device chunk overflows it and bytes are lost.
+  // Enlarge it past the protocol chunk size. Must be called before begin().
+  logSerial.setRxBufferSize(16384);
   Serial.begin(115200);
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
 #endif
@@ -513,6 +518,8 @@ void loop() {
         uint8_t* buf = display.getFrameBuffer();
         logSerial.write(buf, bufferSize);
         logSerial.printf("SCREENSHOT_END\n");
+      } else if (cmd.startsWith("FT:")) {
+        SerialFileTransfer::handle(cmd);
       }
     }
   }
@@ -520,7 +527,7 @@ void loop() {
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+      activityManager.preventAutoSleep() || SerialFileTransfer::keepAwake()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
