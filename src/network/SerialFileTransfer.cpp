@@ -206,6 +206,11 @@ void cmdRead(const String& path) {
   logSerial.printf("OK:READ:%u\n", static_cast<unsigned>(size));
 
   setSerialLogMuted(true);  // hazard #1: no log lines inside the binary frame
+  // The global TX timeout is 1 ms (load-bearing for the logging path), which makes
+  // write() give up almost immediately when the host drains slowly — the TX ring
+  // fills at ~3 KB and the transfer stalls. Raise it for the duration of the stream
+  // so write() properly blocks until the ring drains, then restore it.
+  logSerial.setTxTimeoutMs(200);
   uint32_t crc = 0xFFFFFFFF;
   size_t sent = 0;
   while (sent < size) {
@@ -218,6 +223,7 @@ void cmdRead(const String& path) {
     esp_task_wdt_reset();
   }
   logSerial.flush();
+  logSerial.setTxTimeoutMs(1);  // restore the load-bearing logging timeout
   f.close();
   crc ^= 0xFFFFFFFF;
   setSerialLogMuted(false);
