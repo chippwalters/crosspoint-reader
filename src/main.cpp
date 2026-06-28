@@ -28,6 +28,7 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "crypto/VaultCrypto.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -332,6 +333,9 @@ void setup() {
   halClock.begin();
 
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
+
+  // PAPERBIT: one-time vault crypto smoke test on real hardware (remove before ship).
+  LOG_INF("VAULT", "%s", VaultCrypto::selfTest().c_str());
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
