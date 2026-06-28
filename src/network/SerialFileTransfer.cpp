@@ -24,6 +24,11 @@ constexpr char TMP_SUFFIX[] = ".fttmp";
 
 bool sessionActive = false;
 uint32_t lastCmdMs = 0;
+// Protected-path writes (/.crosspoint, /Vault) are blocked by default so routine
+// file sync can't accidentally clobber settings/vault. A client that *intends* to
+// manage system data (Set-OPDS, Clear-cache, Push-vault, Restore) opts in with
+// CMD:FT:SYS:1 for the duration; it resets on BEGIN/END.
+bool allowSystem = false;
 
 uint8_t buf[CHUNK];
 
@@ -133,8 +138,8 @@ void cmdMkdir(const String& dir) {
     err("EINVAL", "empty path");
     return;
   }
-  if (isProtected(dir)) {
-    err("EACCES", "protected path");
+  if (isProtected(dir) && !allowSystem) {
+    err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
   if (Storage.exists(dir.c_str())) {
@@ -160,8 +165,8 @@ void cmdDelete(const String& path) {
     err("EINVAL", "empty path");
     return;
   }
-  if (isProtected(path)) {
-    err("EACCES", "protected path");
+  if (isProtected(path) && !allowSystem) {
+    err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
   if (!Storage.exists(path.c_str())) {
@@ -239,8 +244,8 @@ void cmdWrite(const String& args) {
     err("EINVAL", "empty path");
     return;
   }
-  if (isProtected(path)) {
-    err("EACCES", "protected path");
+  if (isProtected(path) && !allowSystem) {
+    err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
 
@@ -261,7 +266,7 @@ void cmdWrite(const String& args) {
   setSerialLogMuted(true);
   logSerial.setTimeout(READ_TIMEOUT_MS);
   uint32_t got = 0, crc = 0xFFFFFFFF;
-  bool timedOut = false;
+  bool timedOut = false, sdFull = false;
   while (got < size) {
     const uint32_t rem = size - got;
     const size_t want = rem < CHUNK ? rem : CHUNK;
@@ -270,7 +275,10 @@ void cmdWrite(const String& args) {
       timedOut = true;
       break;
     }
-    f.write(buf, r);
+    if (f.write(buf, r) != r) {  // short write => card full / SD write error
+      sdFull = true;
+      break;
+    }
     crc = crc32_step(crc, buf, r);
     got += r;
     esp_task_wdt_reset();
@@ -281,6 +289,11 @@ void cmdWrite(const String& args) {
   crc ^= 0xFFFFFFFF;
   setSerialLogMuted(false);
 
+  if (sdFull) {
+    Storage.remove(tmp.c_str());
+    err("ENOSPC", "SD write failed (card full?)");
+    return;
+  }
   if (timedOut || got != size) {
     Storage.remove(tmp.c_str());
     err("ETIMEDOUT", "incomplete upload");
@@ -313,12 +326,20 @@ bool handle(const String& cmd) {
     cmdHello();
   } else if (cmd == "FT:BEGIN") {
     sessionActive = true;
+    allowSystem = false;
     ok("session");
   } else if (cmd == "FT:END") {
     sessionActive = false;
+    allowSystem = false;
     ok("bye");
   } else if (cmd == "FT:PING") {
     ok("pong");
+  } else if (cmd == "FT:SYS:1") {
+    allowSystem = true;  // allow writes/deletes under /.crosspoint and /Vault this session
+    ok("sys-on");
+  } else if (cmd == "FT:SYS:0") {
+    allowSystem = false;
+    ok("sys-off");
   } else if (cmd.startsWith("FT:LIST:")) {
     cmdList(cmd.substring(8));
   } else if (cmd.startsWith("FT:STAT:")) {
