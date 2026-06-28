@@ -7,6 +7,9 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
+
+#include "FtUtil.h"
 
 #ifndef CROSSPOINT_VERSION
 #define CROSSPOINT_VERSION "unknown"
@@ -31,16 +34,6 @@ uint32_t lastCmdMs = 0;
 bool allowSystem = false;
 
 uint8_t buf[CHUNK];
-
-// Incremental CRC-32 (zlib/IEEE, poly 0xEDB88320). Seed/caller convention:
-//   uint32_t c = 0xFFFFFFFF; c = crc32_step(c, data, n)...; final = c ^ 0xFFFFFFFF;
-uint32_t crc32_step(uint32_t crc, const uint8_t* data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-  }
-  return crc;
-}
 
 // HWCDC runs with setTxTimeoutMs(1) (load-bearing), so a single write() can send
 // fewer bytes than requested when the host drains slowly. Loop until every byte is
@@ -67,23 +60,8 @@ bool writeAll(const uint8_t* data, size_t len) {
 void ok(const char* line) { logSerial.printf("OK:%s\n", line); }
 void err(const char* code, const char* msg) { logSerial.printf("ERR:%s:%s\n", code, msg); }
 
-uint32_t parseU32(const String& s) { return static_cast<uint32_t>(strtoul(s.c_str(), nullptr, 10)); }
-
-// System areas the host must not mutate over serial: the CrossPoint config/state
-// (settings, OPDS, vault.json) and the encrypted vault. Reads are still allowed
-// (vault files are encrypted); only WRITE/DELETE/MKDIR are blocked. Mirrors the
-// WebDAV "protected paths" rule. Prevents data loss; nothing here is brick-related.
-bool isProtected(const String& path) {
-  return path == "/.crosspoint" || path.startsWith("/.crosspoint/") || path == "/Vault" ||
-         path.startsWith("/Vault/");
-}
-
-// Parent directory of a path ("/a/b/c.epub" -> "/a/b"); empty if at root.
-String parentOf(const String& path) {
-  int slash = path.lastIndexOf('/');
-  if (slash <= 0) return "";
-  return path.substring(0, slash);
-}
+// Pure helpers (crc32, isProtected, parentOf, parseU32) live in FtUtil.h so they
+// can be host unit-tested (test/ft_util) without the Arduino toolchain.
 
 // ---- commands ---------------------------------------------------------------
 
@@ -138,7 +116,7 @@ void cmdMkdir(const String& dir) {
     err("EINVAL", "empty path");
     return;
   }
-  if (isProtected(dir) && !allowSystem) {
+  if (FtUtil::isProtected(dir.c_str()) && !allowSystem) {
     err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
@@ -165,7 +143,7 @@ void cmdDelete(const String& path) {
     err("EINVAL", "empty path");
     return;
   }
-  if (isProtected(path) && !allowSystem) {
+  if (FtUtil::isProtected(path.c_str()) && !allowSystem) {
     err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
@@ -192,7 +170,7 @@ void cmdRmdir(const String& dir) {
     err("EINVAL", "refusing to remove root / empty path");
     return;
   }
-  if (isProtected(dir) && !allowSystem) {
+  if (FtUtil::isProtected(dir.c_str()) && !allowSystem) {
     err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
@@ -245,7 +223,7 @@ void cmdRead(const String& path) {
     const int r = f.read(buf, want);
     if (r <= 0) break;
     if (!writeAll(buf, r)) break;  // host stopped draining
-    crc = crc32_step(crc, buf, r);
+    crc = FtUtil::crc32Update(crc, buf, r);
     sent += r;
     esp_task_wdt_reset();
   }
@@ -271,19 +249,19 @@ void cmdWrite(const String& args) {
     return;
   }
   const String path = args.substring(0, c1);
-  const uint32_t size = parseU32(args.substring(c1 + 1, c2));
-  const uint32_t wantCrc = parseU32(args.substring(c2 + 1));
+  const uint32_t size = FtUtil::parseU32(args.substring(c1 + 1, c2).c_str());
+  const uint32_t wantCrc = FtUtil::parseU32(args.substring(c2 + 1).c_str());
   if (path.isEmpty()) {
     err("EINVAL", "empty path");
     return;
   }
-  if (isProtected(path) && !allowSystem) {
+  if (FtUtil::isProtected(path.c_str()) && !allowSystem) {
     err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
     return;
   }
 
-  const String parent = parentOf(path);
-  if (!parent.isEmpty()) Storage.mkdir(parent.c_str());  // create parents as needed
+  const std::string parent = FtUtil::parentOf(path.c_str());
+  if (!parent.empty()) Storage.mkdir(parent.c_str());  // create parents as needed
 
   const String tmp = path + TMP_SUFFIX;
   Storage.remove(tmp.c_str());
@@ -312,7 +290,7 @@ void cmdWrite(const String& args) {
       sdFull = true;
       break;
     }
-    crc = crc32_step(crc, buf, r);
+    crc = FtUtil::crc32Update(crc, buf, r);
     got += r;
     esp_task_wdt_reset();
     logSerial.printf("OK:ACK:%u\n", static_cast<unsigned>(got));  // flow-control credit
