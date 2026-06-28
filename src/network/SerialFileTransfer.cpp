@@ -187,6 +187,33 @@ void cmdDelete(const String& path) {
   }
 }
 
+void cmdRmdir(const String& dir) {
+  if (dir.isEmpty() || dir == "/") {
+    err("EINVAL", "refusing to remove root / empty path");
+    return;
+  }
+  if (isProtected(dir) && !allowSystem) {
+    err("EACCES", "protected path (send CMD:FT:SYS:1 to allow)");
+    return;
+  }
+  if (!Storage.exists(dir.c_str())) {
+    err("ENOENT", "no such directory");
+    return;
+  }
+  HalFile f = Storage.open(dir.c_str());
+  const bool isDir = f && f.isDirectory();
+  if (f) f.close();
+  if (!isDir) {
+    err("ENOTDIR", "not a directory (use DELETE for files)");
+    return;
+  }
+  if (Storage.removeDir(dir.c_str())) {  // recursive: removes contents then the dir
+    ok("RMDIR");
+  } else {
+    err("EIO", "rmdir failed");
+  }
+}
+
 void cmdRead(const String& path) {
   HalFile f;
   if (!Storage.exists(path.c_str())) {
@@ -354,6 +381,8 @@ bool handle(const String& cmd) {
     cmdMkdir(cmd.substring(9));
   } else if (cmd.startsWith("FT:DELETE:")) {
     cmdDelete(cmd.substring(10));
+  } else if (cmd.startsWith("FT:RMDIR:")) {
+    cmdRmdir(cmd.substring(9));
   } else if (cmd.startsWith("FT:READ:")) {
     cmdRead(cmd.substring(8));
   } else if (cmd.startsWith("FT:WRITE:")) {
