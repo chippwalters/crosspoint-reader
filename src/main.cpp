@@ -514,9 +514,30 @@ void loop() {
       cmd.trim();
       if (cmd == "SCREENSHOT") {
         const uint32_t bufferSize = display.getBufferSize();
+        uint8_t* fb = display.getFrameBuffer();
         logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
-        uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, bufferSize);
+        // Same fixes as the FT READ path: mute logging so a stray log line can't
+        // corrupt the binary blob, and raise the TX timeout (the load-bearing 1 ms
+        // logging timeout makes write() give up and stall past the ~3 KB TX ring
+        // when the host drains slowly). Blocking write loop sends every byte.
+        setSerialLogMuted(true);
+        logSerial.setTxTimeoutMs(200);
+        logSerial.flush();
+        size_t off = 0;
+        unsigned long lastProgress = millis();
+        while (off < bufferSize) {
+          const size_t w = logSerial.write(fb + off, bufferSize - off);
+          if (w > 0) {
+            off += w;
+            lastProgress = millis();
+          } else if (millis() - lastProgress > 5000) {
+            break;  // host stopped draining
+          }
+          yield();
+        }
+        logSerial.flush();
+        logSerial.setTxTimeoutMs(1);
+        setSerialLogMuted(false);
         logSerial.printf("SCREENSHOT_END\n");
       } else if (cmd.startsWith("FT:")) {
         SerialFileTransfer::handle(cmd);
