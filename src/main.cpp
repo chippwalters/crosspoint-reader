@@ -578,7 +578,12 @@ void loop() {
   }
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
-  if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
+  // Never auto-sleep while on USB power: it keeps the device awake and the serial
+  // port up for host/firmware tools (no more handoff/flash races). The moment it's
+  // unplugged it reverts to the normal sleep timeout. (Manual power-button sleep
+  // still works.) Worst case if isUsbConnected misreads: a sleep-behaviour quirk,
+  // never a hang — manual sleep remains available.
+  if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs && !gpio.isUsbConnected()) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
     enterDeepSleep(true);
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
