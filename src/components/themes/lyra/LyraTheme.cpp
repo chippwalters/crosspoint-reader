@@ -16,6 +16,7 @@
 #include "components/icons/book24.h"
 #include "components/icons/bookmark.h"
 #include "components/icons/cover.h"
+#include "components/icons/fetch.h"
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
 #include "components/icons/folder24.h"
@@ -79,6 +80,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return BookmarkIcon;
       case UIIcon::Lock:
         return LockIcon;
+      case UIIcon::Fetch:
+        return FetchIcon;
       default:
         return nullptr;
     }
