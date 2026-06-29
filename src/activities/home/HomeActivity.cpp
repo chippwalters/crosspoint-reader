@@ -19,6 +19,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "images/PaperbitHeader.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = 5;  // File Browser, Recents, File transfer, Settings, My Vault
@@ -220,6 +221,13 @@ void HomeActivity::render(RenderLock&&) {
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
                  metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
+
+  // PAPERBIT wordmark at the top-left of the home header (the home header has no
+  // centered title, so this slot is free; the battery stays at the right). The bitmap
+  // is pre-rotated 90 deg CCW (the panel rotates blits 90 deg CW) so it reads upright;
+  // drawImage blits byte-aligned, so the y origin is a multiple of 8 for exact placement.
+  constexpr int kWordmarkY = 8;
+  renderer.drawImage(PaperbitHeader, metrics.contentSidePadding, kWordmarkY, PaperbitHeader_W, PaperbitHeader_H);
 
   // Record the tile rect so storeCoverBuffer (called from the theme) knows
   // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
