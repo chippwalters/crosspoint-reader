@@ -13,6 +13,7 @@
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
+#include "home/PaperbitFetchActivity.h"
 #include "home/VaultActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
@@ -177,6 +178,10 @@ void ActivityManager::goToFileTransfer() {
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToVault() { replaceActivity(std::make_unique<VaultActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToPaperbitFetch() {
+  replaceActivity(std::make_unique<PaperbitFetchActivity>(renderer, mappedInput));
+}
 
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
