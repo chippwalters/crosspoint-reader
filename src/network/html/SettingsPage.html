@@ -302,6 +302,7 @@
 
   <div id="wifi-container"></div>
   <div id="opds-container"></div>
+  <div id="fetch-container"></div>
 
   <div class="card">
     <p style="text-align: center; color: #95a5a6; margin: 0;">
@@ -825,8 +826,38 @@
     }
   }
 
+  // --- Paperbit Fetch source URL ---
+  async function loadFetchSource() {
+    let url = '';
+    try {
+      const resp = await fetch('/api/fetch');
+      if (resp.ok) url = (await resp.json()).url || '';
+    } catch (e) { /* leave blank */ }
+    const c = document.getElementById('fetch-container');
+    c.innerHTML =
+      '<div class="card"><h2>Paperbit Fetch</h2>' +
+      '<div class="setting-row"><span class="setting-label">Source URL</span>' +
+      '<span class="setting-control"><input type="text" id="fetch-url" placeholder="https://example.com/folder/" value="' +
+      escapeHtml(url) + '"></span></div>' +
+      '<div class="opds-actions"><button class="save-btn" onclick="saveFetchSource()">Save Fetch URL</button></div>' +
+      '</div>';
+  }
+  async function saveFetchSource() {
+    const url = document.getElementById('fetch-url').value.trim();
+    try {
+      const resp = await fetch('/api/fetch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url })
+      });
+      showMessage(resp.ok ? 'Fetch URL saved' : 'Save failed', !resp.ok);
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+
   loadWifiNetworks();
   loadOpdsServers();
+  loadFetchSource();
 </script>
 </body>
 </html>

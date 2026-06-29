@@ -21,7 +21,7 @@
 namespace {
 constexpr int PAGE_ITEMS = 8;
 constexpr const char* FETCH_DIR = "/Fetch";
-const char* kSetUrlRow = "\xE2\x9C\x8E Set source URL\xE2\x80\xA6";  // "✎ Set source URL…"
+const char* kSetUrlRow = "Set source URL";  // ASCII only (UI font may lack pencil/ellipsis glyphs)
 }  // namespace
 
 void PaperbitFetchActivity::onEnter() {
@@ -134,7 +134,10 @@ void PaperbitFetchActivity::downloadDoc(const FetchDoc& d) {
   if (result == HttpDownloader::OK) {
     // Open the freshly-fetched doc: set it as the target and reboot into the reader
     // (the reboot also performs the Wi-Fi teardown that onExit would otherwise do).
+    // saveToFile() is REQUIRED — ESP.restart() clears RAM, and the reader-target boot path
+    // reloads APP_STATE from disk, so the new path must be persisted before the reboot.
     APP_STATE.openEpubPath = dest;
+    APP_STATE.saveToFile();
     silentRestartToReader();
   } else {
     state = State::ERROR;

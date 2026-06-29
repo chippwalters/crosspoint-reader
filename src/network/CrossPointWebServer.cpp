@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
+#include "FetchSourceStore.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
@@ -169,6 +170,10 @@ void CrossPointWebServer::begin() {
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
   server->on("/api/opds", HTTP_POST, [this] { handlePostOpdsServer(); });
   server->on("/api/opds/delete", HTTP_POST, [this] { handleDeleteOpdsServer(); });
+
+  // Paperbit Fetch source URL
+  server->on("/api/fetch", HTTP_GET, [this] { handleGetFetchSource(); });
+  server->on("/api/fetch", HTTP_POST, [this] { handlePostFetchSource(); });
 
   // Wi-Fi credential endpoints
   server->on("/api/wifi", HTTP_GET, [this] { handleGetWifiNetworks(); });
@@ -1272,6 +1277,33 @@ void CrossPointWebServer::handlePostSettings() {
 }
 
 // ---- OPDS Server API ----
+
+void CrossPointWebServer::handleGetFetchSource() const {
+  JsonDocument doc;
+  doc["url"] = FETCH_SOURCE.getUrl();
+  String out;
+  serializeJson(doc, out);
+  server->send(200, "application/json", out);
+}
+
+void CrossPointWebServer::handlePostFetchSource() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing JSON body");
+    return;
+  }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, server->arg("plain"));
+  if (err) {
+    server->send(400, "text/plain", String("Invalid JSON: ") + err.c_str());
+    return;
+  }
+  const std::string url = doc["url"] | "";
+  if (FETCH_SOURCE.setUrl(url)) {
+    server->send(200, "application/json", "{\"ok\":true}");
+  } else {
+    server->send(500, "text/plain", "Failed to save");
+  }
+}
 
 void CrossPointWebServer::handleGetOpdsServers() const {
   const auto& servers = OPDS_STORE.getServers();

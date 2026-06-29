@@ -135,6 +135,10 @@ class CrossPointWebServer {
   void handlePostOpdsServer();
   void handleDeleteOpdsServer();
 
+  // Paperbit Fetch source URL
+  void handleGetFetchSource() const;
+  void handlePostFetchSource();
+
   // Wi-Fi credential handlers
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();
