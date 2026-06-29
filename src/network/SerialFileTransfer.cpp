@@ -1,14 +1,18 @@
 #include "SerialFileTransfer.h"
 
+#include <Arduino.h>
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <esp_ota_ops.h>
 #include <esp_task_wdt.h>
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
 
+#include "FirmwareFlasher.h"
 #include "FtUtil.h"
 
 #ifndef CROSSPOINT_VERSION
@@ -66,8 +70,86 @@ void err(const char* code, const char* msg) { logSerial.printf("ERR:%s:%s\n", co
 // ---- commands ---------------------------------------------------------------
 
 void cmdHello() {
-  logSerial.printf("OK:{\"proto\":%u,\"device\":\"%s\",\"fw\":\"%s\",\"chunk\":%u}\n", PROTO_VERSION,
-                   gpio.deviceIsX3() ? "X3" : "X4", CROSSPOINT_VERSION, static_cast<unsigned>(CHUNK));
+  logSerial.printf("OK:{\"proto\":%u,\"device\":\"%s\",\"fw\":\"%s\",\"chunk\":%u,\"battery\":%u,\"usb\":%s}\n",
+                   PROTO_VERSION, gpio.deviceIsX3() ? "X3" : "X4", CROSSPOINT_VERSION, static_cast<unsigned>(CHUNK),
+                   static_cast<unsigned>(powerManager.getBatteryPercentage()),
+                   gpio.isUsbConnected() ? "true" : "false");
+}
+
+// ---- OTA firmware update (wraps the existing brick-safe firmware_flash) ------
+
+// Serial OTA progress, throttled to one line per percent.
+int otaLastPct = -1;
+void otaProgressCb(size_t written, size_t total, void*) {
+  const int pct = total ? static_cast<int>((written * 100) / total) : 0;
+  if (pct != otaLastPct) {
+    otaLastPct = pct;
+    logSerial.printf("OK:OTA_PROGRESS:%u/%u\n", static_cast<unsigned>(written), static_cast<unsigned>(total));
+  }
+}
+
+// Validate only — never writes flash, never reboots. Zero brick risk.
+void cmdOtaDryrun(const String& path) {
+  if (path.isEmpty()) {
+    err("EINVAL", "empty path");
+    return;
+  }
+  HalFile f;
+  if (!Storage.openFileForRead("FT", path.c_str(), f) || !f) {
+    err("OTA", "OPEN_FAIL");
+    return;
+  }
+  const size_t size = f.fileSize();
+  f.close();
+  const esp_partition_t* dest = esp_ota_get_next_update_partition(nullptr);
+  if (!dest) {
+    err("OTA", "NO_PARTITION");
+    return;
+  }
+  if (size > dest->size) {
+    err("OTA", "TOO_LARGE");
+    return;
+  }
+  const auto vr = firmware_flash::validateImageFile(path.c_str(), dest->size);
+  if (vr == firmware_flash::Result::OK) {
+    logSerial.printf("OK:OTA_DRYRUN_OK:%u\n", static_cast<unsigned>(size));
+  } else {
+    logSerial.printf("ERR:OTA:%s\n", firmware_flash::resultName(vr));
+  }
+}
+
+// Real flash: validate -> write the INACTIVE OTA slot -> flip otadata -> reboot.
+// The running slot + bootloader + partition table are never touched; any interruption
+// leaves the old firmware bootable. Refuses to flash unless on USB power.
+void cmdOta(const String& path) {
+  if (path.isEmpty()) {
+    err("EINVAL", "empty path");
+    return;
+  }
+  if (!gpio.isUsbConnected()) {  // defense-in-depth: never flash on battery
+    err("OTA", "NO_USB_POWER");
+    return;
+  }
+  HalFile f;
+  if (!Storage.openFileForRead("FT", path.c_str(), f) || !f) {
+    err("OTA", "OPEN_FAIL");
+    return;
+  }
+  f.close();
+
+  otaLastPct = -1;
+  setSerialLogMuted(true);  // keep log lines out of the OTA_PROGRESS stream
+  const auto result = firmware_flash::flashFromSdPath(path.c_str(), otaProgressCb, nullptr);
+  setSerialLogMuted(false);
+
+  if (result == firmware_flash::Result::OK) {
+    logSerial.printf("OK:OTA_DONE\n");
+    logSerial.flush();
+    delay(1500);
+    ESP.restart();  // boots the freshly written slot
+  } else {
+    logSerial.printf("ERR:OTA:%s\n", firmware_flash::resultName(result));
+  }
 }
 
 void cmdList(const String& dir) {
@@ -365,6 +447,10 @@ bool handle(const String& cmd) {
     cmdRead(cmd.substring(8));
   } else if (cmd.startsWith("FT:WRITE:")) {
     cmdWrite(cmd.substring(9));
+  } else if (cmd.startsWith("FT:OTA_DRYRUN:")) {
+    cmdOtaDryrun(cmd.substring(14));
+  } else if (cmd.startsWith("FT:OTA:")) {
+    cmdOta(cmd.substring(7));
   } else {
     err("EINVAL", "unknown FT command");
   }
