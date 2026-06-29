@@ -80,6 +80,15 @@ void cmdHello() {
                    gpio.isUsbConnected() ? "true" : "false");
 }
 
+// SD capacity. Kept OUT of HELLO because freeBytes() scans the FAT (can be slow on a
+// large/full card) and HELLO is on the hot handshake path.
+void cmdDf() {
+  const uint64_t total = Storage.totalBytes();
+  const uint64_t freeB = Storage.freeBytes();
+  logSerial.printf("OK:{\"free\":%llu,\"total\":%llu}\n", static_cast<unsigned long long>(freeB),
+                   static_cast<unsigned long long>(total));
+}
+
 // ---- OTA firmware update (wraps the existing brick-safe firmware_flash) ------
 
 // Serial OTA progress, throttled to one line per percent.
@@ -431,6 +440,8 @@ bool handle(const String& cmd) {
     ok("bye");
   } else if (cmd == "FT:PING") {
     ok("pong");
+  } else if (cmd == "FT:DF") {
+    cmdDf();
   } else if (cmd == "FT:SYS:1") {
     allowSystem = true;  // allow writes/deletes under /.crosspoint and /Vault this session
     ok("sys-on");

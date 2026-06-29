@@ -45,6 +45,11 @@ class HalStorage {
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file);
   bool removeDir(const char* path);
 
+  // Capacity of the mounted SD volume, in bytes (0 if not ready). freeBytes()
+  // scans the FAT on first call, so keep it off hot paths.
+  uint64_t totalBytes();
+  uint64_t freeBytes();
+
   static HalStorage& getInstance() { return instance; }
 
   class StorageLock;  // private class, used internally
