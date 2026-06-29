@@ -19,7 +19,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "images/PaperbitHeader.h"
+#include "images/PaperbitIcon.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = 5;  // File Browser, Recents, File transfer, Settings, My Vault
@@ -222,12 +222,21 @@ void HomeActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
                  metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
 
-  // PAPERBIT wordmark at the top-left of the home header (the home header has no
-  // centered title, so this slot is free; the battery stays at the right). The bitmap
-  // is pre-rotated 90 deg CCW (the panel rotates blits 90 deg CW) so it reads upright;
-  // drawImage blits byte-aligned, so the y origin is a multiple of 8 for exact placement.
-  constexpr int kWordmarkY = 8;
-  renderer.drawImage(PaperbitHeader, metrics.contentSidePadding, kWordmarkY, PaperbitHeader_W, PaperbitHeader_H);
+  // PAPERBIT brand lockup at the top-left of the home header (which has no centered
+  // title, so this slot is free; the battery stays at the right): the dissolving-document
+  // icon + the word "PAPERBIT" in the same menu font as "Browse Files", vertically centred
+  // against the icon. The icon bitmap is pre-rotated 90 deg CCW (the panel rotates blits
+  // 90 deg CW) so it reads upright; drawImage blits byte-aligned, so the y origin is a
+  // multiple of 8 for exact placement.
+  constexpr int kIconY = 8;
+  const int iconX = metrics.contentSidePadding;
+  renderer.drawImage(PaperbitIcon, iconX, kIconY, PaperbitIcon_W, PaperbitIcon_H);
+  // drawImage blits the pre-rotated bitmap, so stored H -> on-screen width, stored W -> height.
+  const int iconScreenW = PaperbitIcon_H;
+  const int iconScreenH = PaperbitIcon_W;
+  const int wordTextH = renderer.getTextHeight(UI_10_FONT_ID);
+  renderer.drawText(UI_10_FONT_ID, iconX + iconScreenW + 12, kIconY + (iconScreenH - wordTextH) / 2, "PAPERBIT",
+                    true);
 
   // Record the tile rect so storeCoverBuffer (called from the theme) knows
   // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
