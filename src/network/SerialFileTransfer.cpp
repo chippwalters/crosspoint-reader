@@ -25,7 +25,11 @@ namespace {
 
 constexpr uint16_t PROTO_VERSION = 1;
 constexpr size_t CHUNK = 4096;
-constexpr uint32_t READ_TIMEOUT_MS = 5000;
+// Per-chunk read window. Generous enough to ride out SD-card write latency spikes
+// (wear-leveling / GC pauses can stall a write for >1 s) on long multi-MB uploads, so a
+// single slow chunk doesn't abort the whole transfer with ETIMEDOUT. The host's own
+// per-ACK timeout should be >= this.
+constexpr uint32_t READ_TIMEOUT_MS = 15000;
 constexpr uint32_t SESSION_TIMEOUT_MS = 60000;  // session auto-expires if host goes silent
 constexpr char TMP_SUFFIX[] = ".fttmp";
 

@@ -441,8 +441,9 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   const bool bookSelected = hasContinueReading && selectorIndex == 0;
 
   // --- Top "book" card for the current title (selectorIndex == 0) ---
-  // When there's no cover image, use fixed size (half screen)
-  // When there's cover image, adapt width to image aspect ratio, keep height fixed at 400px
+  // When there's no cover image, use a standard book-shaped placeholder (2:3 w:h).
+  // When there's a cover image, adapt width to the image's real aspect ratio, height fixed.
+  constexpr float kBookAspectWoverH = 2.0f / 3.0f;  // standard book cover width:height
   const int baseHeight = rect.height;  // Fixed height (400px)
 
   int bookWidth, bookX;
@@ -472,15 +473,15 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
             bookWidth = maxWidth;
           }
         } else {
-          bookWidth = rect.width / 2;  // Fallback
+          bookWidth = static_cast<int>(baseHeight * kBookAspectWoverH);  // Fallback: standard 2:3 book
         }
       }
     }
   }
 
   if (!hasCoverImage) {
-    // No cover: use half screen size
-    bookWidth = rect.width / 2;
+    // No cover image: draw a standard 2:3 (width:height) book-shaped placeholder.
+    bookWidth = static_cast<int>(baseHeight * kBookAspectWoverH);
   }
 
   bookX = rect.x + (rect.width - bookWidth) / 2;
