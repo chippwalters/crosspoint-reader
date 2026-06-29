@@ -56,13 +56,18 @@ def after_bin(source, target, env):  # noqa: ARG001
     short = _git(project_dir, ["rev-parse", "--short", "HEAD"])
     base = _base_version(project_dir)
 
+    version = f"{base}-dev-{branch}-{short}"
     manifest = {
         "target": "esp32c3",
         "product": "crosspoint-reader",
         "device": "X3/X4",  # one universal binary; runtime-detects the panel
         "branch": branch,
         "gitHash": short,
-        "version": f"{base}-dev-{branch}-{short}",
+        "version": version,
+        # The published binary's filename (version-stamped). The host installer fetches
+        # this name from the same folder as the manifest; the build-dir output is plain
+        # firmware.bin and publish-firmware.ps1 renames it to this on publish.
+        "file": f"firmware-{version}.bin",
         "sha256": sha,
         "size": len(data),
     }
