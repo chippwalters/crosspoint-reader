@@ -17,7 +17,11 @@
 #include <string>
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+// Paperbit fork: the device's built-in Wi-Fi OTA checks OUR published release feed instead of
+// upstream CrossPoint's GitHub releases. release.json is a GitHub-releases-shaped feed emitted by
+// paperbit/webtool/publish-firmware.ps1 (tag_name + an asset named "firmware.bin" whose
+// browser_download_url points at the versioned binary). ReleaseJsonParser reads it unchanged.
+constexpr char latestReleaseUrl[] = "https://www.widgetgadget.com/cw1/Paperbit/release.json";
 
 esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
   return esp_http_client_set_header(http_client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
