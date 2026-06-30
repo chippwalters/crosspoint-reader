@@ -35,6 +35,7 @@ class PaperbitFetchActivity final : public Activity {
   int selectorIndex = 0;  // 0 = "Set source URL" row; 1.. = docs[index-1]
   std::string statusMessage;
   std::string errorMessage;
+  std::string errorHint;  // optional second line under errorMessage (actionable detail)
   size_t downloadProgress = 0;
   size_t downloadTotal = 0;
 

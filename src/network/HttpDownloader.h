@@ -29,6 +29,15 @@ class HttpDownloader {
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
                        const std::string& password = "");
 
+  /**
+   * Like fetchUrl above, but also reports the HTTP status code so the caller can give a
+   * specific error. outHttpStatus is 0 when the connection could not be opened at all
+   * (DNS failure / no route / no internet), or the final HTTP status (e.g. 200, 404) when
+   * a response was received. Returns true only on a 200 with a complete body.
+   */
+  static bool fetchUrl(const std::string& url, std::string& outContent, int& outHttpStatus,
+                       const std::string& username = "", const std::string& password = "");
+
   static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
                        const std::string& password = "");
 

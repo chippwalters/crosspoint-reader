@@ -44,7 +44,8 @@ bool isRedirect(int status) {
 // that ends early as ESP_ERR_HTTP_INCOMPLETE_DATA, whereas the read loop streams
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
-                                     Sink& sink) {
+                                     Sink& sink, int* outStatus = nullptr) {
+  if (outStatus) *outStatus = 0;  // 0 = connection never opened (DNS / no route / no internet)
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
@@ -95,6 +96,8 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     contentLength = esp_http_client_fetch_headers(client);
     status = esp_http_client_get_status_code(client);
   }
+
+  if (outStatus) *outStatus = status;  // a response was received; report its code
 
   if (status != 200) {
     LOG_ERR("HTTP", "unexpected status: %d", status);
@@ -161,6 +164,18 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
     return true;
   };
   return runGet(url, username, password, sink) == OK;
+}
+
+bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, int& outHttpStatus,
+                              const std::string& username, const std::string& password) {
+  LOG_DBG("HTTP", "Fetching: %s", url.c_str());
+  outContent.clear();
+  Sink sink;
+  sink.write = [&outContent](const uint8_t* data, size_t len) {
+    outContent.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  };
+  return runGet(url, username, password, sink, &outHttpStatus) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,

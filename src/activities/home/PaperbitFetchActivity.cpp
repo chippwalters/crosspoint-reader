@@ -7,6 +7,8 @@
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <cstdio>
+
 #include "CrossPointState.h"
 #include "FetchSourceStore.h"
 #include "MappedInputManager.h"
@@ -75,6 +77,7 @@ void PaperbitFetchActivity::onWifiSelectionComplete(const bool connected) {
   } else {
     state = State::ERROR;
     errorMessage = tr(STR_WIFI_CONN_FAILED);
+    errorHint = "Couldn't join Wi-Fi. Try again.";
     requestUpdate();
   }
 }
@@ -83,10 +86,24 @@ void PaperbitFetchActivity::fetchIndex() {
   const std::string url = UrlUtils::buildUrl(baseUrl, "index.json");
   LOG_DBG("FETCH", "Index: %s", url.c_str());
 
+  errorHint.clear();
   std::string body;
-  if (!HttpDownloader::fetchUrl(url, body)) {
+  int httpStatus = 0;
+  if (!HttpDownloader::fetchUrl(url, body, httpStatus)) {
     state = State::ERROR;
-    errorMessage = "Could not reach source";
+    if (httpStatus == 0) {
+      // The connection never opened: associated to Wi-Fi but no internet/DNS, or a bad host.
+      errorMessage = "Can't reach the source";
+      errorHint = "Check your Wi-Fi and the source URL.";
+    } else if (httpStatus == 404) {
+      errorMessage = "Source not found (404)";
+      errorHint = "No index.json here - check the URL.";
+    } else {
+      char buf[40];
+      snprintf(buf, sizeof(buf), "Source error (HTTP %d)", httpStatus);
+      errorMessage = buf;
+      errorHint = "Unexpected server response.";
+    }
     requestUpdate();
     return;
   }
@@ -96,6 +113,7 @@ void PaperbitFetchActivity::fetchIndex() {
   if (err || !doc.is<JsonArray>()) {
     state = State::ERROR;
     errorMessage = "Bad index.json";
+    errorHint = "index.json is missing or not a list.";
     requestUpdate();
     return;
   }
@@ -112,7 +130,16 @@ void PaperbitFetchActivity::fetchIndex() {
     if (!d.file.empty()) docs.push_back(d);
   }
 
-  selectorIndex = docs.empty() ? 0 : 1;  // land on the first doc when there is one
+  if (docs.empty()) {
+    // Reached the source and parsed a valid but empty index — nothing to list.
+    state = State::ERROR;
+    errorMessage = "No documents found";
+    errorHint = "index.json has no entries yet.";
+    requestUpdate();
+    return;
+  }
+
+  selectorIndex = 1;  // land on the first doc
   state = State::LIST;
   requestUpdate();
 }
@@ -200,7 +227,10 @@ void PaperbitFetchActivity::render(RenderLock&&) {
   }
 
   if (state == State::ERROR) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, errorMessage.c_str(), true);
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 20, errorMessage.c_str(), true, EpdFontFamily::BOLD);
+    if (!errorHint.empty()) {
+      renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 12, errorHint.c_str(), true);
+    }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "Set URL");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
