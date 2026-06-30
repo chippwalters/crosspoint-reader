@@ -27,6 +27,8 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "Epub/Page.h"                       // TEMP: complete Page type for the verify command's unique_ptr<Page>
+#include "Epub/markdown/MarkdownSection.h"  // TEMP: MD on-device verify command (remove before release)
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "crypto/VaultCrypto.h"
 #include "network/SerialFileTransfer.h"
@@ -541,6 +543,75 @@ void loop() {
         logSerial.printf("SCREENSHOT_END\n");
       } else if (cmd.startsWith("FT:")) {
         SerialFileTransfer::handle(cmd);
+      } else if (cmd.startsWith("MDPAGINATE:")) {
+        // TEMP on-device verify of the native-MD pipeline (remove before release).
+        // CMD:MDPAGINATE:/Books/<file>.md → paginate via MarkdownSection, load page 0, render it into
+        // the framebuffer using the REAL reader viewport (margins + status-bar reservation, mirroring
+        // MdReaderActivity::render), then stream the framebuffer exactly like CMD:SCREENSHOT so the host
+        // can capture a true visual of page 0. Reports heap throughout.
+        RenderLock lock;
+        const std::string path(cmd.substring(11).c_str());
+        logSerial.printf("MDTEST_START:%s baseFree=%u\n", path.c_str(), (unsigned)ESP.getFreeHeap());
+        // Real reader viewport: oriented viewable area + screen margin, with the bottom reserving the
+        // larger of the margin and the status-bar height (matches MdReaderActivity::render).
+        int mt, mr, mb, ml;
+        renderer.getOrientedViewableTRBL(&mt, &mr, &mb, &ml);
+        mt += SETTINGS.screenMargin;
+        ml += SETTINGS.screenMargin;
+        mr += SETTINGS.screenMargin;
+        const uint8_t sbh = UITheme::getInstance().getStatusBarHeight();
+        mb += (SETTINGS.screenMargin > sbh) ? SETTINGS.screenMargin : sbh;
+        const uint16_t vw = renderer.getScreenWidth() - ml - mr;
+        const uint16_t vh = renderer.getScreenHeight() - mt - mb;
+        MarkdownSection sec(path, "/.crosspoint/mdtest.bin", renderer);
+        sec.clearCache();
+        const bool ok = sec.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+                                              SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, vw, vh,
+                                              SETTINGS.hyphenationEnabled, SETTINGS.focusReadingEnabled, nullptr);
+        logSerial.printf("MDTEST_PAGINATE ok=%d pages=%u truncated=%d minFree=%u maxAlloc=%u\n", ok ? 1 : 0,
+                         (unsigned)sec.pageCount, sec.truncated ? 1 : 0, (unsigned)ESP.getMinFreeHeap(),
+                         (unsigned)ESP.getMaxAllocHeap());
+        if (ok && sec.pageCount > 0) {
+          sec.currentPage = 0;
+          auto pg = sec.loadPageFromSectionFile();
+          logSerial.printf("MDTEST_PAGE0 loaded=%d\n", pg ? 1 : 0);
+          if (pg) {
+            // Render page 0 into the framebuffer: font scan/prewarm pass, then the real BW render
+            // (mirrors MdReaderActivity::renderContents, BW only — enough for a screenshot proof).
+            const int fontId = SETTINGS.getReaderFontId();
+            renderer.clearScreen();
+            auto* fcm = renderer.getFontCacheManager();
+            auto scope = fcm->createPrewarmScope();
+            pg->render(renderer, fontId, ml, mt);  // scan pass
+            scope.endScanAndPrewarm();
+            pg->render(renderer, fontId, ml, mt);  // real render into the framebuffer
+            renderer.displayBuffer();              // also show it on the physical panel
+            // Stream the framebuffer (identical framing to CMD:SCREENSHOT).
+            const uint32_t bufferSize = display.getBufferSize();
+            uint8_t* fb = display.getFrameBuffer();
+            logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
+            setSerialLogMuted(true);
+            logSerial.setTxTimeoutMs(200);
+            logSerial.flush();
+            size_t off = 0;
+            unsigned long lastProgress = millis();
+            while (off < bufferSize) {
+              const size_t w = logSerial.write(fb + off, bufferSize - off);
+              if (w > 0) {
+                off += w;
+                lastProgress = millis();
+              } else if (millis() - lastProgress > 5000) {
+                break;
+              }
+              yield();
+            }
+            logSerial.flush();
+            logSerial.setTxTimeoutMs(1);
+            setSerialLogMuted(false);
+            logSerial.printf("SCREENSHOT_END\n");
+          }
+        }
+        logSerial.printf("MDTEST_END\n");
       }
     }
   }
