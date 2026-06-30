@@ -105,7 +105,10 @@ void PaperbitFetchActivity::fetchIndex() {
     FetchDoc d;
     d.name = o["name"] | "";
     d.file = o["file"] | "";
-    if (d.file.empty() && !d.name.empty()) d.file = d.name + ".epub";
+    // Default to .md: Paperbit Fetch now serves raw Markdown rendered natively on-device
+    // (no server-side MD→EPUB conversion). An index.json entry may still name an explicit
+    // .epub/.txt/.xtc in `file`; only the name-only shorthand defaults to .md.
+    if (d.file.empty() && !d.name.empty()) d.file = d.name + ".md";
     if (!d.file.empty()) docs.push_back(d);
   }
 

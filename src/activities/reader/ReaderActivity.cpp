@@ -7,6 +7,7 @@
 #include "CrossPointSettings.h"
 #include "Epub.h"
 #include "EpubReaderActivity.h"
+#include "MdReaderActivity.h"
 #include "SdCardFontSystem.h"
 #include "Txt.h"
 #include "TxtReaderActivity.h"
@@ -17,10 +18,9 @@
 
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
-bool ReaderActivity::isTxtFile(const std::string& path) {
-  return FsHelpers::hasTxtExtension(path) ||
-         FsHelpers::hasMarkdownExtension(path);  // Treat .md as txt files (until we have a markdown reader)
-}
+bool ReaderActivity::isTxtFile(const std::string& path) { return FsHelpers::hasTxtExtension(path); }
+
+bool ReaderActivity::isMarkdownFile(const std::string& path) { return FsHelpers::hasMarkdownExtension(path); }
 
 bool ReaderActivity::isBmpFile(const std::string& path) { return FsHelpers::hasBmpExtension(path); }
 
@@ -109,6 +109,11 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
   activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(renderer, mappedInput, std::move(txt)));
 }
 
+void ReaderActivity::onGoToMdReader(const std::string& path) {
+  currentBookPath = path;
+  activityManager.replaceActivity(std::make_unique<MdReaderActivity>(renderer, mappedInput, path));
+}
+
 void ReaderActivity::onEnter() {
   Activity::onEnter();
 
@@ -136,6 +141,13 @@ void ReaderActivity::onEnter() {
       return;
     }
     onGoToTxtReader(std::move(txt));
+  } else if (isMarkdownFile(initialBookPath)) {
+    if (!Storage.exists(initialBookPath.c_str())) {
+      LOG_ERR("READER", "File does not exist: %s", initialBookPath.c_str());
+      onGoBack();
+      return;
+    }
+    onGoToMdReader(initialBookPath);
   } else {
     auto epub = loadEpub(initialBookPath);
     if (!epub) {

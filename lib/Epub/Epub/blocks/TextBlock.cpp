@@ -70,6 +70,20 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
 
       renderer.drawLine(wordX, underlineY, wordX + underlineWidth, underlineY, true);
     }
+
+    if (!scanning && (currentStyle & EpdFontFamily::STRIKETHROUGH) != 0) {
+      const std::string& w = words[i];
+      int strikeWidth = renderer.getTextWidth(fontId, w.c_str(), currentStyle, baseDir);
+      // Strike line ~3/4 down from the cell top (through the x-height middle, above the baseline
+      // at wordY+ascender). Mirrors the underline path's SUP/SUB half-width handling.
+      const int strikeY = wordY + (ascender * 3) / 4;
+
+      if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+        strikeWidth = (strikeWidth + 1) / 2;
+      }
+
+      renderer.drawLine(wordX, strikeY, wordX + strikeWidth, strikeY, true);
+    }
   }
 }
 
