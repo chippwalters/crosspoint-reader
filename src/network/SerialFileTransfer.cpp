@@ -287,7 +287,34 @@ void cmdRmdir(const String& dir) {
   }
 }
 
-void cmdRead(const String& path) {
+// Read a whole file, or a resumable BYTE RANGE: "<path>" | "<path>:<offset>:<len>".
+// The USB-Serial-JTAG silently drops ~0.06-0.1% of bytes on long sustained streams
+// (known HWCDC behavior — arduino-esp32 #9378 / esp-idf #11192; pacing/flush does NOT
+// guarantee delivery). So the host reads in bounded ranges, checks the per-range CRC in
+// OK:END, and re-requests ONLY a range that fails. OK:READ/OK:END now describe the RANGE,
+// not the whole file. Whole-file form (no offset/len) stays backward-compatible.
+void cmdRead(const String& arg) {
+  String path = arg;
+  long offset = -1, reqLen = -1;
+  {
+    const int c2 = arg.lastIndexOf(':');
+    const int c1 = (c2 > 0) ? arg.lastIndexOf(':', c2 - 1) : -1;
+    if (c1 > 0 && c2 > c1) {
+      const String offS = arg.substring(c1 + 1, c2);
+      const String lenS = arg.substring(c2 + 1);
+      bool numeric = offS.length() > 0 && lenS.length() > 0;
+      for (unsigned i = 0; numeric && i < offS.length(); i++)
+        if (!isDigit(offS[i])) numeric = false;
+      for (unsigned i = 0; numeric && i < lenS.length(); i++)
+        if (!isDigit(lenS[i])) numeric = false;
+      if (numeric) {
+        offset = offS.toInt();
+        reqLen = lenS.toInt();
+        path = arg.substring(0, c1);
+      }
+    }
+  }
+
   HalFile f;
   if (!Storage.exists(path.c_str())) {
     err("ENOENT", "no such file");
@@ -302,19 +329,34 @@ void cmdRead(const String& path) {
     err("EISDIR", "is a directory");
     return;
   }
-  const size_t size = f.size();
-  logSerial.printf("OK:READ:%u\n", static_cast<unsigned>(size));
 
-  setSerialLogMuted(true);  // hazard #1: no log lines inside the binary frame
-  // The global TX timeout is 1 ms (load-bearing for the logging path), which makes
-  // write() give up almost immediately when the host drains slowly — the TX ring
-  // fills at ~3 KB and the transfer stalls. Raise it for the duration of the stream
-  // so write() properly blocks until the ring drains, then restore it.
+  const size_t fileSize = f.size();
+  size_t count = fileSize;  // bytes to stream (whole file by default)
+  if (offset >= 0) {
+    if (static_cast<size_t>(offset) > fileSize) {
+      f.close();
+      err("ERANGE", "offset past EOF");
+      return;
+    }
+    const size_t avail = fileSize - static_cast<size_t>(offset);
+    count = (reqLen >= 0 && static_cast<size_t>(reqLen) < avail) ? static_cast<size_t>(reqLen) : avail;
+    if (!f.seek(static_cast<uint32_t>(offset))) {
+      f.close();
+      err("EIO", "seek failed");
+      return;
+    }
+  }
+
+  logSerial.printf("OK:READ:%u\n", static_cast<unsigned>(count));
+
+  setSerialLogMuted(true);  // no log lines inside the binary frame
+  // Raise the 1 ms (load-bearing) TX timeout so write() blocks until the ring drains
+  // (instead of giving up) while the host reads slowly; restore it after.
   logSerial.setTxTimeoutMs(200);
   uint32_t crc = 0xFFFFFFFF;
   size_t sent = 0;
-  while (sent < size) {
-    const size_t want = (size - sent) < CHUNK ? (size - sent) : CHUNK;
+  while (sent < count) {
+    const size_t want = (count - sent) < CHUNK ? (count - sent) : CHUNK;
     const int r = f.read(buf, want);
     if (r <= 0) break;
     if (!writeAll(buf, r)) break;  // host stopped draining
@@ -328,7 +370,7 @@ void cmdRead(const String& path) {
   crc ^= 0xFFFFFFFF;
   setSerialLogMuted(false);
 
-  if (sent == size) {
+  if (sent == count) {
     logSerial.printf("OK:END:%lu\n", static_cast<unsigned long>(crc));
   } else {
     err("EIO", "short read");
