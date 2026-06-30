@@ -29,6 +29,7 @@ class MdReaderActivity final : public Activity {
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
+  void onOpenToc();  // Confirm: open the "#"/"##" table-of-contents selector and jump to a heading
   void renderStatusBar() const;
   void saveProgress() const;
   void loadProgress();

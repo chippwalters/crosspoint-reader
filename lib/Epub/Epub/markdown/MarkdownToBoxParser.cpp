@@ -256,6 +256,7 @@ bool MarkdownToBoxParser::onToken(const md_token_t* token) {
       flushBlock();
       if (hitMemoryLimit_) return false;
       headerAnchorPage_ = completedPageCount;  // page where this header will begin
+      headerLevel_ = (token->data >= 1 && token->data <= 6) ? static_cast<uint8_t>(token->data) : 1;
       headerText_.clear();
       startNewBlock(headerStyle());
       inHeader_ = true;
@@ -264,7 +265,7 @@ bool MarkdownToBoxParser::onToken(const md_token_t* token) {
     case MD_HEADER_END:
       flushWord();
       if (!headerText_.empty()) {
-        anchorData.push_back({headerText_, headerAnchorPage_});  // free "#"/"##" TOC anchor
+        anchorData.push_back({headerText_, headerAnchorPage_, headerLevel_});  // free "#"/"##" TOC anchor
       }
       inHeader_ = false;
       flushBlock();

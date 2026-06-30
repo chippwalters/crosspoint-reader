@@ -11,6 +11,7 @@
 #include "Epub/ParsedText.h"
 #include "Epub/blocks/BlockStyle.h"
 #include "Epub/blocks/TextBlock.h"
+#include "Epub/markdown/MarkdownSection.h"  // MdTocEntry
 #include "Epub/markdown/md_parser.h"
 
 class Page;
@@ -85,7 +86,7 @@ class MarkdownToBoxParser {
 
   bool hitMemoryLimit() const { return hitMemoryLimit_; }
   bool aborted() const { return aborted_; }
-  const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
+  const std::vector<MdTocEntry>& getAnchors() const { return anchorData; }
 
  private:
   // md_callback_t trampoline -> member dispatch
@@ -143,12 +144,13 @@ class MarkdownToBoxParser {
   // ---- header -> anchor (free TOC) ----
   std::string headerText_;
   uint16_t headerAnchorPage_ = 0;
+  uint8_t headerLevel_ = 1;  // "#"=1, "##"=2, … (from MD_HEADER_START token data)
 
   // ---- footnotes for links (drained onto pages in addLineToPage) ----
   std::vector<std::pair<std::string, std::string>> pendingFootnotes_;  // <label, href>
 
   // ---- anchor map + LUT counters (mirror ChapterHtmlSlimParser/Section) ----
-  std::vector<std::pair<std::string, uint16_t>> anchorData;
+  std::vector<MdTocEntry> anchorData;
   uint16_t completedPageCount = 0;
   uint16_t paragraphIndex = 0;
   uint16_t listItemIndex = 0;

@@ -11,8 +11,9 @@
 
 namespace {
 constexpr const char* TAG = "MDS";
-// v1: native-Markdown section cache. Bump to invalidate older caches.
-constexpr uint8_t MD_SECTION_FILE_VERSION = 1;
+// native-Markdown section cache. Bump to invalidate older caches.
+// v2: anchor map records the heading level (u8) after each title+page, for TOC indentation.
+constexpr uint8_t MD_SECTION_FILE_VERSION = 2;
 
 // Header layout (in order):
 //   version(u8) fontId(int) lineCompression(float) extraParagraphSpacing(bool)
@@ -175,9 +176,10 @@ bool MarkdownSection::createSectionFile(const int fontId, const float lineCompre
   const uint32_t anchorMapOffset = file.position();
   const auto& anchors = parser.getAnchors();
   serialization::writePod(file, static_cast<uint16_t>(anchors.size()));
-  for (const auto& [anchor, page] : anchors) {
-    serialization::writeString(file, anchor);
-    serialization::writePod(file, page);
+  for (const auto& a : anchors) {
+    serialization::writeString(file, a.title);
+    serialization::writePod(file, a.page);
+    serialization::writePod(file, a.level);
   }
 
   // Patch header: pageCount, lutOffset, anchorMapOffset.
@@ -238,11 +240,40 @@ std::optional<uint16_t> MarkdownSection::getPageForAnchor(const std::string& anc
   for (uint16_t i = 0; i < count; i++) {
     std::string key;
     uint16_t page;
+    uint8_t level;
     serialization::readString(f, key);
     serialization::readPod(f, page);
+    serialization::readPod(f, level);
     if (key == anchor) {
       return page;
     }
   }
   return std::nullopt;
+}
+
+std::vector<MdTocEntry> MarkdownSection::readAnchors() const {
+  std::vector<MdTocEntry> entries;
+  HalFile f;
+  if (!Storage.openFileForRead(TAG, filePath, f)) {
+    return entries;
+  }
+  const uint32_t fileSize = f.size();
+  f.seek(HEADER_SIZE - sizeof(uint32_t));
+  uint32_t anchorMapOffset;
+  serialization::readPod(f, anchorMapOffset);
+  if (anchorMapOffset == 0 || anchorMapOffset >= fileSize) {
+    return entries;
+  }
+  f.seek(anchorMapOffset);
+  uint16_t count;
+  serialization::readPod(f, count);
+  entries.reserve(count);
+  for (uint16_t i = 0; i < count; i++) {
+    MdTocEntry e;
+    serialization::readString(f, e.title);
+    serialization::readPod(f, e.page);
+    serialization::readPod(f, e.level);
+    entries.push_back(std::move(e));
+  }
+  return entries;
 }

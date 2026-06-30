@@ -2,13 +2,24 @@
 
 #include <HalStorage.h>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 class Page;
 class GfxRenderer;
+
+// One "#"/"##" heading captured for the table of contents (title -> page, with the
+// heading level for indentation). Shared by MarkdownToBoxParser (produces them) and
+// MarkdownSection (serializes + reads them back for the TOC navigation UI).
+struct MdTocEntry {
+  std::string title;
+  uint16_t page = 0;
+  uint8_t level = 1;  // 1 = "#", 2 = "##", ... (clamped 1..6)
+};
 
 // MarkdownSection
 // ---------------
@@ -48,6 +59,9 @@ class MarkdownSection {
 
   // Look up the page number for an anchor (header text) from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;
+  // Read the full table of contents (every "#"/"##" heading, in document order) from the
+  // section cache file, for the TOC navigation UI. Empty if there are no headings.
+  std::vector<MdTocEntry> readAnchors() const;
   // Get the page count from the cache header without fully loading it.
   std::optional<uint16_t> getCachedPageCount() const;
 };

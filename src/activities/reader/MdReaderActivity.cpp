@@ -12,7 +12,9 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
+#include "MdReaderTocActivity.h"
 #include "ProgressFile.h"
+#include "activities/ActivityResult.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -94,6 +96,12 @@ void MdReaderActivity::loop() {
     return;
   }
 
+  // Short press CONFIRM opens the table of contents (#/## headings).
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    onOpenToc();
+    return;
+  }
+
   const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
   if (!prevTriggered && !nextTriggered) {
     return;
@@ -118,6 +126,30 @@ void MdReaderActivity::loop() {
       onGoHome();
     }
   }
+}
+
+void MdReaderActivity::onOpenToc() {
+  if (!section) {
+    return;
+  }
+  std::vector<MdTocEntry> entries = section->readAnchors();
+  if (entries.empty()) {
+    // Fail-soft: no "#"/"##" headings to navigate to. Show a brief notice over the page
+    // (literal to avoid touching the i18n tables; promote to a STR_ key when regenerated).
+    GUI.drawPopup(renderer, "No headings");
+    return;
+  }
+  const int cur = section->currentPage;
+  startActivityForResult(std::make_unique<MdReaderTocActivity>(renderer, mappedInput, std::move(entries), cur),
+                         [this](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             const auto& pr = std::get<PageResult>(result.data);
+                             if (section && pr.page < section->pageCount) {
+                               section->currentPage = static_cast<int>(pr.page);
+                             }
+                           }
+                           requestUpdate();
+                         });
 }
 
 void MdReaderActivity::render(RenderLock&&) {
