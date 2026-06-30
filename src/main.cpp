@@ -612,6 +612,66 @@ void loop() {
           }
         }
         logSerial.printf("MDTEST_END\n");
+      } else if (cmd.startsWith("MDTOC:")) {
+        // TEMP: paginate a .md, read back its #/## TOC anchors, render the TOC list (mirrors
+        // MdReaderTocActivity::render, header + list), and stream the framebuffer like SCREENSHOT.
+        // Verifies the anchor serialization round-trip + indentation. Remove before release.
+        RenderLock lock;
+        const std::string path(cmd.substring(6).c_str());
+        logSerial.printf("MDTOC_START:%s\n", path.c_str());
+        int mt, mr, mb, ml;
+        renderer.getOrientedViewableTRBL(&mt, &mr, &mb, &ml);
+        mt += SETTINGS.screenMargin;
+        ml += SETTINGS.screenMargin;
+        mr += SETTINGS.screenMargin;
+        const uint8_t sbh = UITheme::getInstance().getStatusBarHeight();
+        mb += (SETTINGS.screenMargin > sbh) ? SETTINGS.screenMargin : sbh;
+        const uint16_t vw = renderer.getScreenWidth() - ml - mr;
+        const uint16_t vh = renderer.getScreenHeight() - mt - mb;
+        MarkdownSection sec(path, "/.crosspoint/mdtoc.bin", renderer);
+        sec.clearCache();
+        const bool ok = sec.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+                                              SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, vw, vh,
+                                              SETTINGS.hyphenationEnabled, SETTINGS.focusReadingEnabled, nullptr);
+        auto entries = sec.readAnchors();
+        logSerial.printf("MDTOC_ENTRIES ok=%d count=%u\n", ok ? 1 : 0, (unsigned)entries.size());
+        renderer.clearScreen();
+        auto metrics = UITheme::getInstance().getMetrics();
+        Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+        GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                       "Contents");
+        const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+        const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+        GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight},
+                     static_cast<int>(entries.size()), 0, [&entries](int i) {
+                       const auto& e = entries[i];
+                       const int d = (e.level > 1) ? (e.level - 1) : 0;
+                       return std::string(static_cast<size_t>(d) * 2, ' ') + e.title;
+                     });
+        renderer.displayBuffer();
+        const uint32_t bufferSize = display.getBufferSize();
+        uint8_t* fb = display.getFrameBuffer();
+        logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
+        setSerialLogMuted(true);
+        logSerial.setTxTimeoutMs(200);
+        logSerial.flush();
+        size_t off = 0;
+        unsigned long lastProgress = millis();
+        while (off < bufferSize) {
+          const size_t w = logSerial.write(fb + off, bufferSize - off);
+          if (w > 0) {
+            off += w;
+            lastProgress = millis();
+          } else if (millis() - lastProgress > 5000) {
+            break;
+          }
+          yield();
+        }
+        logSerial.flush();
+        logSerial.setTxTimeoutMs(1);
+        setSerialLogMuted(false);
+        logSerial.printf("SCREENSHOT_END\n");
+        logSerial.printf("MDTOC_END\n");
       }
     }
   }
