@@ -28,6 +28,9 @@ const char* kSetUrlRow = "Set source URL";  // ASCII only (UI font may lack penc
 
 void PaperbitFetchActivity::onEnter() {
   Activity::onEnter();
+  // Re-read the source URL from disk so a value set from the desktop client (over USB) or the
+  // Wi-Fi web page is picked up without a reboot (the store otherwise caches the boot-time value).
+  FETCH_SOURCE.reload();
   baseUrl = FETCH_SOURCE.getUrl();
   if (baseUrl.empty()) {
     state = State::NO_URL;

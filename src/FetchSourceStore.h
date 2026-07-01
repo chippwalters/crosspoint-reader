@@ -18,6 +18,11 @@ class FetchSourceStore {
   // Trim, persist to /.crosspoint/fetch.url, and update the cache. Returns false on write error.
   bool setUrl(const std::string& url);
 
+  // Force a re-read of /.crosspoint/fetch.url on the next getUrl(). Call this before reading
+  // the URL so a value written externally (desktop client over USB, or the Wi-Fi web page)
+  // is picked up WITHOUT a device reboot — otherwise the once-loaded cache stays stale.
+  void reload() { loaded = false; }
+
  private:
   static FetchSourceStore instance;
   FetchSourceStore() = default;
