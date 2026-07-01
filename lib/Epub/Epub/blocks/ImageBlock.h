@@ -20,7 +20,10 @@ class ImageBlock final : public Block {
   BlockType getType() override { return IMAGE_BLOCK; }
   bool isEmpty() override { return false; }
 
-  void render(GfxRenderer& renderer, const int x, const int y);
+  // fontId is the reader body font, used to label the "[image too large]"
+  // placeholder when the source image is too big to decode safely (see
+  // ImageBlock.cpp). It is otherwise unused for normal image rendering.
+  void render(GfxRenderer& renderer, int fontId, const int x, const int y);
   bool serialize(HalFile& file);
   static std::unique_ptr<ImageBlock> deserialize(HalFile& file);
 
@@ -28,4 +31,10 @@ class ImageBlock final : public Block {
   std::string imagePath;
   int16_t width;
   int16_t height;
+
+  // Cached oversized-image guard verdict for this instance so the header-only
+  // dimension probe runs at most once, not on every one of a page view's ~14
+  // band render passes. -1 = not yet probed, 0 = too large (placeholder),
+  // 1 = safe to decode. Not serialized (recomputed per instance).
+  int8_t decodeVerdict = -1;
 };

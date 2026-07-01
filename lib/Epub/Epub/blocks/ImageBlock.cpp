@@ -4,9 +4,47 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <esp_system.h>  // esp_get_free_heap_size()
 
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
+
+// === Oversized-image guard (fail-loud, never hang / OOM) ===
+//
+// Why this exists: the EPUB image decoders stream row-by-row and are normally
+// memory-bounded, but a large source (Calibre commonly ships comic/scan pages at
+// ~1350x1800) can defeat the streamed pixel cache on the C3's tiny, fragmented
+// ~128 KB working heap. When the cache can't be written the image is re-decoded
+// on *every* render pass; an anti-aliased image page renders ~14 times, so a
+// multi-second decode becomes a ~30 s freeze / watchdog reset (see PixelCache.h).
+// With ~200 such images a book effectively locks up on open.
+//
+// Fix: probe the image *header* dimensions (cheap, no pixel buffer) BEFORE any
+// decode. If the source exceeds a safe budget we skip the decode entirely and
+// draw a visible "[image too large]" placeholder in the space layout already
+// reserved for the image. Images within budget decode exactly as before
+// (the decoders still downscale-to-fit), so the normal path is unchanged.
+//
+// The width cap is the primary catch: the reported failure is width-driven and a
+// >1280 px source is far wider than the ~480 px reader panel can ever show. The
+// pixel and height caps are loose sanity bounds. All three are overridable at
+// build time so the orchestrator can re-tune once hardware confirms a larger safe
+// envelope. Nothing here is hardcoded to a specific panel size.
+#ifndef EPUB_IMG_MAX_SOURCE_WIDTH
+#define EPUB_IMG_MAX_SOURCE_WIDTH 1280  // px; sources wider than this -> placeholder
+#endif
+#ifndef EPUB_IMG_MAX_SOURCE_HEIGHT
+#define EPUB_IMG_MAX_SOURCE_HEIGHT 3072  // px; loose sanity bound
+#endif
+#ifndef EPUB_IMG_MAX_SOURCE_PIXELS
+#define EPUB_IMG_MAX_SOURCE_PIXELS (3u * 1024 * 1024)  // 3 MP work/mem bound
+#endif
+// Skip a decode attempt entirely below this free-heap floor (a decode that can't
+// establish its ~20-44 KB decoder + pixel-cache band would fall into the same
+// re-decode storm). Degrade to a visible placeholder instead.
+#ifndef EPUB_IMG_MIN_FREE_HEAP
+#define EPUB_IMG_MIN_FREE_HEAP (48u * 1024)
+#endif
 
 // Cache file format:
 // - uint16_t width
@@ -117,9 +155,77 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   return true;
 }
 
+// Draw a visible, unmistakable "image too large" marker filling the image's
+// reserved rect: a border, a diagonal cross (legible even at tiny sizes / without
+// a font), and a centred label when it fits. All primitives go through
+// drawPixel(), which honours the active grayscale strip band, so calling this on
+// every band pass reconstructs the full marker exactly like normal text/image
+// rendering. Fail-loud: the reader never shows a silent blank or hangs.
+void drawImageTooLargePlaceholder(GfxRenderer& renderer, int fontId, int x, int y, int w, int h) {
+  if (w < 3 || h < 3) {
+    // Too small for a border/label; just mark the area solid so it is not blank.
+    renderer.fillRect(x, y, w, h, true);
+    return;
+  }
+
+  // Border + diagonal cross (black on the white image background).
+  renderer.drawRect(x, y, w, h, 1, true);
+  renderer.drawLine(x, y, x + w - 1, y + h - 1, true);
+  renderer.drawLine(x + w - 1, y, x, y + h - 1, true);
+
+  // Centred label, best effort. Skip if it would not fit inside the rect.
+  const char* label = "[image too large]";
+  const int tw = renderer.getTextWidth(fontId, label);
+  const int th = renderer.getTextHeight(fontId);
+  if (tw > 0 && th > 0 && tw + 8 <= w && th + 4 <= h) {
+    const int tx = x + (w - tw) / 2;
+    const int ty = y + (h - th) / 2;
+    // Knock out a white strip behind the text so it stays legible over the cross.
+    renderer.fillRect(tx - 3, ty - 2, tw + 6, th + 4, false);
+    renderer.drawText(fontId, tx, ty, label, true);
+  }
+}
+
+// Probe the image header (no pixel buffer) and decide whether it is safe to
+// decode. Returns true when within budget, false when the caller should draw the
+// oversized placeholder. A failed/missing header also returns false (fail-loud).
+bool imageDecodeIsAffordable(const std::string& imagePath) {
+  const size_t freeHeap = esp_get_free_heap_size();
+  if (freeHeap < EPUB_IMG_MIN_FREE_HEAP) {
+    LOG_ERR("IMG", "Low heap (%u < %u) - placeholder instead of decode: %s", (unsigned)freeHeap,
+            (unsigned)EPUB_IMG_MIN_FREE_HEAP, imagePath.c_str());
+    return false;
+  }
+
+  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
+  if (!decoder) {
+    LOG_ERR("IMG", "No decoder for image: %s", imagePath.c_str());
+    return false;
+  }
+
+  ImageDimensions dims = {0, 0};
+  if (!decoder->getDimensions(imagePath, dims)) {
+    LOG_ERR("IMG", "Could not read image header - placeholder: %s", imagePath.c_str());
+    return false;
+  }
+
+  const int sw = dims.width;
+  const int sh = dims.height;
+  const uint32_t pixels = (uint32_t)(sw > 0 ? sw : 0) * (uint32_t)(sh > 0 ? sh : 0);
+  if (sw <= 0 || sh <= 0 || sw > EPUB_IMG_MAX_SOURCE_WIDTH || sh > EPUB_IMG_MAX_SOURCE_HEIGHT ||
+      pixels > EPUB_IMG_MAX_SOURCE_PIXELS) {
+    LOG_ERR("IMG", "Image too large to decode safely (%dx%d, caps %dx%d / %u px) - placeholder: %s", sw, sh,
+            EPUB_IMG_MAX_SOURCE_WIDTH, EPUB_IMG_MAX_SOURCE_HEIGHT, (unsigned)EPUB_IMG_MAX_SOURCE_PIXELS,
+            imagePath.c_str());
+    return false;
+  }
+
+  return true;
+}
+
 }  // namespace
 
-void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
+void ImageBlock::render(GfxRenderer& renderer, const int fontId, const int x, const int y) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
   // suppression, so it would otherwise do a full (discarded) cache render every
@@ -154,6 +260,18 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   std::string cachePath = getCachePath(imagePath);
   if (renderFromCache(renderer, cachePath, x, y, width, height)) {
     return;  // Successfully rendered from cache
+  }
+
+  // Oversized-image guard: probe the header once per instance and refuse to
+  // decode sources that would defeat the pixel cache and trigger the ~14x
+  // re-decode watchdog storm (see the file header comment). Cached so the ~14
+  // band passes of a single page view don't re-open the decoder each time.
+  if (decodeVerdict == -1) {
+    decodeVerdict = imageDecodeIsAffordable(imagePath) ? 1 : 0;
+  }
+  if (decodeVerdict == 0) {
+    drawImageTooLargePlaceholder(renderer, fontId, x, y, width, height);
+    return;
   }
 
   // No cache - need to decode the image
@@ -194,7 +312,13 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
   if (!success) {
-    LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
+    // Fail loud: a decode that failed (bad data, decoder-internal size/heap
+    // limit, cache write error) would otherwise leave a silent blank and could
+    // re-run every band pass. Mark this instance as placeholder so we stop
+    // retrying, then draw the visible marker.
+    LOG_ERR("IMG", "Failed to decode image: %s (drawing placeholder)", imagePath.c_str());
+    decodeVerdict = 0;
+    drawImageTooLargePlaceholder(renderer, fontId, x, y, width, height);
     return;
   }
 

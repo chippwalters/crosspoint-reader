@@ -43,8 +43,9 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
 }
 
 void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
-  // Images don't use fontId or text rendering
-  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
+  // fontId is forwarded so the oversized-image placeholder can be labelled with
+  // the reader body font; normal image decode/render ignores it.
+  imageBlock->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
 }
 
 bool PageImage::serialize(HalFile& file) {
