@@ -38,6 +38,12 @@
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
+#ifdef ENABLE_BLE_KEYBOARD
+#include <esp_heap_caps.h>  // TEMP: CMD:BLEGATE §6 RAM go/no-go harness (remove before release)
+
+#include "ble/BleKeyboardManager.h"
+#endif
+
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
 ActivityManager activityManager(renderer, mappedInputManager);
@@ -673,6 +679,64 @@ void loop() {
         logSerial.printf("SCREENSHOT_END\n");
         logSerial.printf("MDTOC_END\n");
       }
+#ifdef ENABLE_BLE_KEYBOARD
+      else if (cmd == "BLEGATE") {
+        // TEMP §6 RAM go/no-go gate (remove before release). Requires a real BLE HID keyboard in
+        // pairing mode. Measures internal 8-bit heap at PEAK: NimBLE keyboard connected+subscribed
+        // AND a render in progress, both framebuffers resident. GO if >=40 KB free AND >=20 KB
+        // largest free block. See docs/BLE-KEYBOARD-PLAN.md §6.
+        const uint32_t CAPS = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+        auto freeB = [&]() { return (unsigned)heap_caps_get_free_size(CAPS); };
+        auto largestB = [&]() { return (unsigned)heap_caps_get_largest_free_block(CAPS); };
+
+        RenderLock lock;  // keeps both static framebuffers the sole render owner during measurement
+        auto& kb = BleKeyboardManager::getInstance();
+        logSerial.printf("BLEGATE_START free=%u largest=%u\n", freeB(), largestB());
+
+        if (!kb.begin()) {
+          logSerial.printf("BLEGATE_ERR init_failed\n");
+        } else {
+          logSerial.printf("BLEGATE_POSTINIT free=%u largest=%u\n", freeB(), largestB());
+          kb.setCharCallback([](char c) {
+            logSerial.printf("BLEGATE_KEY 0x%02X '%c'\n", (unsigned)(uint8_t)c,
+                             (c >= 0x20 && c < 0x7F) ? c : '.');
+          });
+
+          const bool ok = kb.scanAndConnect(20000);
+          logSerial.printf("BLEGATE_CONNECT ok=%d free=%u largest=%u\n", ok ? 1 : 0, freeB(),
+                           largestB());
+
+          if (ok) {
+            // Put a render "in progress": fill the framebuffer + draw text (exercises font-cache
+            // transients) so the measurement reflects BLE + renderer coexisting at peak.
+            renderer.clearScreen();
+            renderer.drawCenteredText(SMALL_FONT_ID, renderer.getScreenHeight() / 2,
+                                      "BLE RAM gate", true);
+            renderer.displayBuffer();
+
+            const unsigned peakFree = freeB();
+            const unsigned peakLargest = largestB();
+            const char* verdict = (peakFree >= 40u * 1024 && peakLargest >= 20u * 1024) ? "GO"
+                                  : (peakFree >= 20u * 1024 && peakLargest >= 12u * 1024)
+                                      ? "CONDITIONAL"
+                                      : "NO-GO";
+            logSerial.printf("BLEGATE_PEAK free=%u largest=%u\n", peakFree, peakLargest);
+            logSerial.printf("BLEGATE_VERDICT %s (need free>=40960 AND largest>=20480)\n", verdict);
+
+            // Hold the link ~10 s so the operator can type — decoded keys print via the callback,
+            // proving the boot-keyboard decode end-to-end.
+            logSerial.printf("BLEGATE_TYPE_NOW type on the keyboard for 10s...\n");
+            const unsigned long t0 = millis();
+            while (millis() - t0 < 10000) {
+              delay(50);
+              yield();
+            }
+          }
+          kb.deinit(true);
+        }
+        logSerial.printf("BLEGATE_END free=%u largest=%u\n", freeB(), largestB());
+      }
+#endif
     }
   }
 
