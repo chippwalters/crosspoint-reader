@@ -369,7 +369,7 @@ void EpubReaderActivity::loop() {
       restoreSavedPosition();
       return;
     }
-    onGoHome();
+    onExitReader(epub ? epub->getPath() : "");  // back to Fetch if pulled via Fetch, else Home
     return;
   }
 

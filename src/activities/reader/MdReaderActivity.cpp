@@ -89,10 +89,10 @@ void MdReaderActivity::loop() {
     return;
   }
 
-  // Short press BACK goes directly to home.
+  // Short press BACK: back to Paperbit Fetch if this doc came via Fetch (/Fetch/...), else Home.
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    onGoHome();
+    onExitReader(mdPath);
     return;
   }
 

@@ -60,4 +60,9 @@ class Activity {
   // TODO: remove this in near future
   void onGoHome(HomeMenuItem item = HomeMenuItem::NONE);
   void onSelectBook(const std::string& path);
+
+  // Exit a reader on short-press Back: return to Paperbit Fetch if the book was pulled via
+  // Fetch (lives under /Fetch/), otherwise go Home. Keeps the "Back returns to the Fetch list"
+  // behavior without any persisted flag (the /Fetch/ path is the signal).
+  void onExitReader(const std::string& bookPath);
 };
