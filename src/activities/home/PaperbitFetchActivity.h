@@ -43,6 +43,7 @@ class PaperbitFetchActivity final : public Activity {
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
   void fetchIndex();
+  void parseDirectoryListing(const std::string& html);  // drop-and-fetch: docs from the folder listing
   void downloadDoc(const FetchDoc& doc);
   void promptForUrl();
   bool preventAutoSleep() override { return true; }

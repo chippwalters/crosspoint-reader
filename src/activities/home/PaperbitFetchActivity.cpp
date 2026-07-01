@@ -24,6 +24,26 @@ namespace {
 constexpr int PAGE_ITEMS = 8;
 constexpr const char* FETCH_DIR = "/Fetch";
 const char* kSetUrlRow = "Set source URL";  // ASCII only (UI font may lack pencil/ellipsis glyphs)
+
+// Case-insensitive suffix test (ASCII).
+bool endsWithI(const std::string& s, const std::string& suf) {
+  if (s.size() < suf.size()) return false;
+  const size_t off = s.size() - suf.size();
+  for (size_t i = 0; i < suf.size(); i++) {
+    char a = s[off + i], b = suf[i];
+    if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+    if (a != b) return false;
+  }
+  return true;
+}
+
+// A fetchable document type (what the reader can open). Excludes index.json / .css / .html
+// directory-listing chrome by construction.
+bool isSupportedDoc(const std::string& f) {
+  return endsWithI(f, ".md") || endsWithI(f, ".epub") || endsWithI(f, ".txt") ||
+         endsWithI(f, ".xtc") || endsWithI(f, ".xtch");
+}
 }  // namespace
 
 void PaperbitFetchActivity::onEnter() {
@@ -86,58 +106,59 @@ void PaperbitFetchActivity::onWifiSelectionComplete(const bool connected) {
 }
 
 void PaperbitFetchActivity::fetchIndex() {
-  const std::string url = UrlUtils::buildUrl(baseUrl, "index.json");
-  LOG_DBG("FETCH", "Index: %s", url.c_str());
-
   errorHint.clear();
-  std::string body;
-  int httpStatus = 0;
-  if (!HttpDownloader::fetchUrl(url, body, httpStatus)) {
-    state = State::ERROR;
-    if (httpStatus == 0) {
-      // The connection never opened: associated to Wi-Fi but no internet/DNS, or a bad host.
-      errorMessage = "Can't reach the source";
-      errorHint = "Check your Wi-Fi and the source URL.";
-    } else if (httpStatus == 404) {
-      errorMessage = "Source not found (404)";
-      errorHint = "No index.json here - check the URL.";
-    } else {
-      char buf[40];
-      snprintf(buf, sizeof(buf), "Source error (HTTP %d)", httpStatus);
-      errorMessage = buf;
-      errorHint = "Unexpected server response.";
-    }
-    requestUpdate();
-    return;
-  }
-
-  JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, body);
-  if (err || !doc.is<JsonArray>()) {
-    state = State::ERROR;
-    errorMessage = "Bad index.json";
-    errorHint = "index.json is missing or not a list.";
-    requestUpdate();
-    return;
-  }
-
   docs.clear();
-  for (JsonObject o : doc.as<JsonArray>()) {
-    FetchDoc d;
-    d.name = o["name"] | "";
-    d.file = o["file"] | "";
-    // Default to .md: Paperbit Fetch now serves raw Markdown rendered natively on-device
-    // (no server-side MD→EPUB conversion). An index.json entry may still name an explicit
-    // .epub/.txt/.xtc in `file`; only the name-only shorthand defaults to .md.
-    if (d.file.empty() && !d.name.empty()) d.file = d.name + ".md";
-    if (!d.file.empty()) docs.push_back(d);
+
+  // 1. OPTIONAL index.json — if the folder has one (curated display names / order), use it.
+  //    Absent index.json is the normal "just drop files" case, not an error.
+  const std::string indexUrl = UrlUtils::buildUrl(baseUrl, "index.json");
+  LOG_DBG("FETCH", "Index (optional): %s", indexUrl.c_str());
+  std::string body;
+  int status = 0;
+  if (HttpDownloader::fetchUrl(indexUrl, body, status) && status == 200) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, body) && doc.is<JsonArray>()) {
+      for (JsonObject o : doc.as<JsonArray>()) {
+        FetchDoc d;
+        d.name = o["name"] | "";
+        d.file = o["file"] | "";
+        if (d.file.empty() && !d.name.empty()) d.file = d.name + ".md";  // name-only shorthand
+        if (!d.file.empty()) docs.push_back(d);
+      }
+    }
+  }
+
+  // 2. No usable index.json — list the folder itself and take every supported file (drop-and-fetch).
+  if (docs.empty()) {
+    LOG_DBG("FETCH", "Listing folder: %s", baseUrl.c_str());
+    std::string listing;
+    int listStatus = 0;
+    if (!HttpDownloader::fetchUrl(baseUrl, listing, listStatus)) {
+      state = State::ERROR;
+      if (listStatus == 0) {
+        // Connection never opened: on Wi-Fi but no internet/DNS, or a bad host.
+        errorMessage = "Can't reach the source";
+        errorHint = "Check your Wi-Fi and the source URL.";
+      } else if (listStatus == 404) {
+        errorMessage = "Source not found (404)";
+        errorHint = "Check the source folder URL.";
+      } else {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "Source error (HTTP %d)", listStatus);
+        errorMessage = buf;
+        errorHint = "Unexpected server response.";
+      }
+      requestUpdate();
+      return;
+    }
+    parseDirectoryListing(listing);
   }
 
   if (docs.empty()) {
-    // Reached the source and parsed a valid but empty index — nothing to list.
+    // Reached the source but found no documents (empty folder, or listing disabled + no index.json).
     state = State::ERROR;
     errorMessage = "No documents found";
-    errorHint = "index.json has no entries yet.";
+    errorHint = "Add .md / .epub files to the source folder.";
     requestUpdate();
     return;
   }
@@ -145,6 +166,36 @@ void PaperbitFetchActivity::fetchIndex() {
   selectorIndex = 1;  // land on the first doc
   state = State::LIST;
   requestUpdate();
+}
+
+// Parse an Apache autoindex (directory-listing) HTML page: collect every href that is a plain
+// filename ending in a supported document extension. This is what makes "drop a file in the
+// folder and it shows up" work with no index.json. Skips the parent-dir, column-sort (?C=...),
+// absolute-path, and subdirectory links, and de-dupes (a listing links each name twice: icon + text).
+void PaperbitFetchActivity::parseDirectoryListing(const std::string& html) {
+  const std::string marker = "href=\"";
+  size_t pos = 0;
+  while ((pos = html.find(marker, pos)) != std::string::npos) {
+    pos += marker.size();
+    const size_t end = html.find('"', pos);
+    if (end == std::string::npos) break;
+    const std::string href = html.substr(pos, end - pos);
+    pos = end + 1;
+    if (href.empty() || href[0] == '?' || href[0] == '/' || href.find('/') != std::string::npos ||
+        href.find("..") != std::string::npos) {
+      continue;
+    }
+    if (!isSupportedDoc(href)) continue;
+    bool dup = false;
+    for (const auto& d : docs) {
+      if (d.file == href) { dup = true; break; }
+    }
+    if (dup) continue;
+    FetchDoc d;
+    d.file = href;
+    d.name = href;  // show the filename with its extension (per product choice)
+    docs.push_back(d);
+  }
 }
 
 void PaperbitFetchActivity::downloadDoc(const FetchDoc& d) {
