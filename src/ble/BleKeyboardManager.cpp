@@ -120,19 +120,25 @@ bool BleKeyboardManager::scanAndConnect(uint32_t timeoutMs) {
   NimBLEScanResults results = scan->getResults(timeoutMs, false);
   scan->stop();  // must be fully stopped before connect (EBUSY otherwise)
 
-  const NimBLEAdvertisedDevice* target = nullptr;
+  // IMPORTANT: the advertised-device objects are OWNED by the scan and freed by clearResults().
+  // Copy the peer address BY VALUE before clearing — connecting via the stale pointer is
+  // use-after-free (observed on hardware: first-ever run connected by luck, every later run got
+  // garbage → ble_gap_connect rc=3 BLE_HS_EINVAL).
+  bool found = false;
+  NimBLEAddress peerAddr;
   for (int i = 0; i < results.getCount(); ++i) {
     const NimBLEAdvertisedDevice* dev = results.getDevice(i);
     if (dev && dev->isAdvertisingService(HID_SERVICE_UUID)) {
-      target = dev;
-      LOG_INF("BLEKB", "found HID device: %s rssi=%d",
-              dev->getAddress().toString().c_str(), dev->getRSSI());
+      found = true;
+      peerAddr = dev->getAddress();  // value copy — safe past clearResults()
+      LOG_INF("BLEKB", "found HID device: %s rssi=%d", peerAddr.toString().c_str(),
+              dev->getRSSI());
       break;
     }
   }
   scan->clearResults();
 
-  if (!target) {
+  if (!found) {
     // Fail loud: Classic-only / USB-dongle keyboards never advertise 0x1812. Empty result is a
     // real, reportable condition, not a silent no-op.
     LOG_ERR("BLEKB", "no BLE HID keyboard found (0x1812) — is it in pairing mode & BLE (not Classic)?");
@@ -140,17 +146,34 @@ bool BleKeyboardManager::scanAndConnect(uint32_t timeoutMs) {
     return false;
   }
 
-  targetAddr_ = target->getAddress().toString();
-  targetAddrType_ = target->getAddress().getType();
+  targetAddr_ = peerAddr.toString();
+  targetAddrType_ = peerAddr.getType();
 
   // --- Connect ---
   state_ = State::CONNECTING;
   client_ = NimBLEDevice::createClient();
+  if (!client_) {
+    LOG_ERR("BLEKB", "createClient failed (connection pool exhausted?)");
+    state_ = State::FAILED;
+    return false;
+  }
   client_->setClientCallbacks(&gateClientCallbacks, false);
   client_->setConnectTimeout(10000);
 
-  if (!client_->connect(target)) {
-    LOG_ERR("BLEKB", "connect failed to %s", targetAddr_.c_str());
+  // Right after a scan stops, the controller can still be transitioning and ble_gap_connect
+  // rejects instantly. Settle briefly and retry a few times. Connect BY ADDRESS (value copy) —
+  // never via the freed scan-result pointer.
+  bool connected = false;
+  for (int attempt = 1; attempt <= 3 && !connected; ++attempt) {
+    delay(attempt == 1 ? 150 : 350);  // settle before first try, back off on retries
+    connected = client_->connect(peerAddr);
+    if (!connected) {
+      LOG_INF("BLEKB", "connect attempt %d failed (rc=%d), retrying...", attempt,
+              client_->getLastError());
+    }
+  }
+  if (!connected) {
+    LOG_ERR("BLEKB", "connect failed to %s after retries", targetAddr_.c_str());
     NimBLEDevice::deleteClient(client_);
     client_ = nullptr;
     state_ = State::FAILED;
