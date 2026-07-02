@@ -289,12 +289,14 @@ void NotesListActivity::render(RenderLock&&) {
         static_cast<int>(selectorIndex),
         [this](int index) { return index == 0 ? std::string("+ New note") : notes[index - 1].title; },
         [this](int index) { return index == 0 ? std::string() : notes[index - 1].fileName; },
-        [](int index) { return index == 0 ? UIIcon::File : UIIcon::Text; });
+        [](int index) { return index == 0 ? UIIcon::File : UIIcon::Notes; });
   }
 
+  // Same hint text as EpubReaderBookmarksActivity — the confirm button is labelled "Open" here,
+  // and the device has no button named "OK".
   GUI.drawHelpText(renderer,
                    Rect{0, pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 15, pageWidth, 20},
-                   "Hold OK on a note to delete it");
+                   tr(STR_HOLD_OPEN_TO_DELETE));
 
   const char* confirmLabel = selectorIndex == 0 ? "New" : tr(STR_OPEN);
   const auto labels = mappedInput.mapLabels(tr(STR_HOME), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));

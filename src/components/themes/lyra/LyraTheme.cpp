@@ -6,6 +6,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@
 #include "components/icons/image24.h"
 #include "components/icons/library.h"
 #include "components/icons/lock.h"
+#include "components/icons/notes.h"
 #include "components/icons/recent.h"
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
@@ -82,6 +84,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return LockIcon;
       case UIIcon::Fetch:
         return FetchIcon;
+      case UIIcon::Notes:
+        return NotesIcon;
       default:
         return nullptr;
     }
@@ -518,11 +522,27 @@ void LyraTheme::drawEmptyRecents(const GfxRenderer& renderer, const Rect rect) c
 void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
+  const int spacing = LyraMetrics::values.menuSpacing;
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  int rowHeight = LyraMetrics::values.menuRowHeight;
+  // Squeeze rows evenly when the full menu would run past rect.height (e.g. the Notes item and/or
+  // an OPDS server entry pushes the Home menu past the button hints). With few items nothing
+  // changes: rows are clamped to the theme's nominal menuRowHeight.
+  if (buttonCount > 1 && rect.height > 0) {
+    const int fitted = (rect.height - (buttonCount - 1) * spacing) / buttonCount;
+    if (fitted < rowHeight) {
+      // Floor keeps the label readable and the 32px icon (drawn at textY + 3) inside its tile:
+      // (rowH - lineH) / 2 + 3 + 32 <= rowH  =>  rowH >= 70 - lineH. Below the floor we accept
+      // overflow rather than clipping glyphs (unreachable with the current menus).
+      const int minRowHeight = std::max(lineHeight + 6, 70 - lineHeight);
+      rowHeight = std::max(fitted, minRowHeight);
+    }
+  }
+
   for (int i = 0; i < buttonCount; ++i) {
     int tileWidth = rect.width - LyraMetrics::values.contentSidePadding * 2;
-    Rect tileRect = Rect{rect.x + LyraMetrics::values.contentSidePadding,
-                         rect.y + i * (LyraMetrics::values.menuRowHeight + LyraMetrics::values.menuSpacing), tileWidth,
-                         LyraMetrics::values.menuRowHeight};
+    Rect tileRect =
+        Rect{rect.x + LyraMetrics::values.contentSidePadding, rect.y + i * (rowHeight + spacing), tileWidth, rowHeight};
 
     const bool selected = selectedIndex == i;
 
@@ -533,8 +553,7 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     int textX = tileRect.x + 16;
-    const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-    const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;
+    const int textY = tileRect.y + (rowHeight - lineHeight) / 2;
 
     if (rowIcon != nullptr) {
       UIIcon icon = rowIcon(i);

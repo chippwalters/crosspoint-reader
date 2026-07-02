@@ -7,6 +7,7 @@
 
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Logging.h>
 #include <esp_system.h>
 
@@ -708,7 +709,10 @@ void NoteEditorActivity::drawFullScreen() const {
   const std::vector<std::string> vis = visibleSlice();
   drawLineSpan(0, static_cast<int>(vis.size()) - 1);
 
-  const auto labels = mappedInput.mapLabels("Save & exit", "", "", "");
+  // "Exit" (not "Save & exit"): auto-save is continuous, so there is never unsaved state to warn
+  // about, and the longer label overflowed the 80px hint button. Same label as the other
+  // session-style activities (CalibreConnect, web server).
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

@@ -270,7 +270,7 @@ void HomeActivity::render(RenderLock&&) {
   // BLE-keyboard typewriter notes. Appended at the end so the existing index mapping is stable;
   // compiled out entirely without the flag.
   menuItems.push_back("Notes");
-  menuIcons.push_back(Text);
+  menuIcons.push_back(Notes);
 #endif
 
   if (hasOpdsServers) {
@@ -284,11 +284,12 @@ void HomeActivity::render(RenderLock&&) {
     menuIcons.insert(menuIcons.begin(), Book);
   }
 
+  // Menu gets exactly the space between the cover tile and the button hints. Themes fit the items
+  // into rect.height (Lyra/Classic squeeze row height when needed, RoundedRaff paginates), so the
+  // menu can never paint over the hints even with optional items (OPDS, Notes) enabled.
+  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
   GUI.drawButtonMenu(
-      renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
+      renderer, Rect{0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight},
       static_cast<int>(menuItems.size()),
       metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
       [&menuItems](int index) { return std::string(menuItems[index]); },

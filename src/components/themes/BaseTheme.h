@@ -115,7 +115,8 @@ enum UIIcon {
   Hotspot,
   Bookmark,
   Lock,
-  Fetch
+  Fetch,
+  Notes
 };
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
