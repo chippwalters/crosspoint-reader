@@ -46,6 +46,10 @@ class HomeActivity final : public Activity {
     if (item == HomeMenuItem::MY_VAULT) return i;
     ++i;
     if (item == HomeMenuItem::PAPERBIT_FETCH) return i;
+#ifdef ENABLE_BLE_KEYBOARD
+    ++i;
+    if (item == HomeMenuItem::NOTES) return i;
+#endif
     return 0;
   }
 
@@ -58,7 +62,10 @@ class HomeActivity final : public Activity {
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i++) return HomeMenuItem::SETTINGS_MENU;
     if (idx == i++) return HomeMenuItem::MY_VAULT;
-    if (idx == i) return HomeMenuItem::PAPERBIT_FETCH;
+    if (idx == i++) return HomeMenuItem::PAPERBIT_FETCH;
+#ifdef ENABLE_BLE_KEYBOARD
+    if (idx == i) return HomeMenuItem::NOTES;
+#endif
     return HomeMenuItem::NONE;
   }
   void onSelectBook(const std::string& path);
@@ -69,6 +76,9 @@ class HomeActivity final : public Activity {
   void onOpdsBrowserOpen();
   void onMyVaultOpen();
   void onPaperbitFetchOpen();
+#ifdef ENABLE_BLE_KEYBOARD
+  void onNotesOpen();
+#endif
 
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image

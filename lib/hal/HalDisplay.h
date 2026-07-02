@@ -41,6 +41,14 @@ class HalDisplay {
   void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
+  // Windowed update: push only the rect [x, x+w) x [y, y+h) of the framebuffer to the panel and
+  // FAST-refresh it, leaving the rest of the glass untouched. Coordinates are PHYSICAL panel
+  // coordinates; x and w must be byte-aligned (multiples of 8) — see EInkDisplay::displayWindow.
+  // On X3 the SDK falls back to a full-frame FAST refresh internally (different partial-update
+  // command set); visual result is equivalent. Callers normally go through
+  // GfxRenderer::displayWindow, which handles orientation rotation + alignment.
+  void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+
   // Power management
   void deepSleep();
 

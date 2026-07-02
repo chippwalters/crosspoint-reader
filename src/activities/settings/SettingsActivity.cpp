@@ -27,6 +27,11 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+#ifdef ENABLE_BLE_KEYBOARD
+#include "BleKeyboardPairingActivity.h"
+#include "ble/BleKeyboardStore.h"
+#endif
+
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
 
@@ -61,6 +66,9 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.insert(controlsSettings.begin(),
                           SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
+#ifdef ENABLE_BLE_KEYBOARD
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD, SettingAction::BleKeyboard));
+#endif
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
@@ -269,6 +277,11 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::About:
         startActivityForResult(std::make_unique<AboutActivity>(renderer, mappedInput), resultHandler);
         break;
+#ifdef ENABLE_BLE_KEYBOARD
+      case SettingAction::BleKeyboard:
+        startActivityForResult(std::make_unique<BleKeyboardPairingActivity>(renderer, mappedInput), resultHandler);
+        break;
+#endif
       case SettingAction::None:
         // Do nothing
         break;
@@ -353,6 +366,17 @@ void SettingsActivity::render(RenderLock&&) {
       [&settings](int i) {
         const auto& setting = settings[i];
         std::string valueText = "";
+#ifdef ENABLE_BLE_KEYBOARD
+        // "Keyboard" action row shows the pairing state inline ("Paired: <name>" / "None").
+        if (setting.type == SettingType::ACTION && setting.action == SettingAction::BleKeyboard) {
+          if (BLEKB_STORE.hasKeyboard()) {
+            std::string name = BLEKB_STORE.getDisplayName();
+            if (name.size() > 14) name = name.substr(0, 13) + "\xe2\x80\xa6";  // UTF-8 ellipsis
+            return "Paired: " + name;
+          }
+          return std::string("None");
+        }
+#endif
         if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
           const bool value = SETTINGS.*(setting.valuePtr);
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);

@@ -129,8 +129,13 @@ class GfxRenderer {
   int getScreenWidth() const;
   int getScreenHeight() const;
   void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
-  // EXPERIMENTAL: Windowed update - display only a rectangular region
-  // void displayWindow(int x, int y, int width, int height) const;
+  // Windowed update: FAST-refresh only the given LOGICAL (orientation-aware) rect of the
+  // framebuffer on the glass, leaving the rest of the panel untouched. The rect is rotated to
+  // physical panel coordinates and widened to the panel's 8-pixel byte alignment automatically.
+  // The framebuffer region must already contain the desired pixels (draw first, then call this).
+  // X4: true partial window (SSD1677 setRamArea). X3: SDK falls back to full-frame FAST refresh.
+  // Used by the BLE-keyboard typewriter editor for ~per-keystroke line refreshes.
+  void displayWindow(int x, int y, int width, int height) const;
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;

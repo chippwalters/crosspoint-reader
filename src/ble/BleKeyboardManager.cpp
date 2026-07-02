@@ -1,4 +1,6 @@
-// BleKeyboardManager implementation — see BleKeyboardManager.h for scope/attribution.
+// BleKeyboardManager implementation — see BleKeyboardManager.h for scope/attribution and the
+// three HARD DESIGN RULES (power lock, scan-stop-before-connect, address-by-value) found on
+// hardware during the §6 gate runs.
 //
 // Entire translation unit is gated on ENABLE_BLE_KEYBOARD: in the default / slim builds this
 // compiles to an empty object so the normal firmware is unaffected and NimBLE is never linked.
@@ -12,6 +14,9 @@
 
 #include <NimBLEDevice.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include <cstring>
 
 #include "Logging.h"
@@ -23,6 +28,16 @@ static const NimBLEUUID PROTOCOL_MODE_UUID((uint16_t)0x2A4E);    // Protocol Mod
 static const NimBLEUUID BOOT_KB_INPUT_UUID((uint16_t)0x2A22);    // Boot Keyboard Input Report
 static const NimBLEUUID REPORT_REF_UUID((uint16_t)0x2908);       // Report Reference descriptor
 
+// Per-attempt connect timeout. Bounds the worst-case join in deinit(): an in-flight attempt
+// finishes within this before the abort flag is honored between retries.
+#ifndef BLEKB_CONNECT_TIMEOUT_MS
+#define BLEKB_CONNECT_TIMEOUT_MS 8000
+#endif
+
+// Worker task for the async connect/scan flows. NimBLE client calls block the calling task on
+// host-task semaphores; 5 KB of stack is comfortably above what the gate flows used.
+static constexpr uint32_t BLEKB_TASK_STACK = 5120;
+
 // HID boot-keyboard modifier masks (byte 0).
 static constexpr uint8_t MOD_SHIFT_LEFT = 0x02;
 static constexpr uint8_t MOD_SHIFT_RIGHT = 0x20;
@@ -32,13 +47,15 @@ static inline bool isShiftMod(uint8_t m) { return (m & MOD_SHIFT_LEFT) || (m & M
 static constexpr uint8_t HID_ERR_ROLLOVER = 0x01;
 
 // ---------------------------------------------------------------------------------------------
-// Minimal client security callbacks: "Just Works" auto-accept. Mirrors MicroSlate's approach so
-// keyboards that demand a passkey/confirm still bond during the RAM-gate run without a UI.
+// Client security callbacks: "Just Works" auto-accept. Mirrors MicroSlate's approach so keyboards
+// that demand a passkey/confirm still bond without a UI (the keyboard being paired IS the input
+// device, so there is nothing to type a code into on our side).
 // ---------------------------------------------------------------------------------------------
-static class BleGateClientCallbacks : public NimBLEClientCallbacks {
+static class BleKbClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient*) override { LOG_INF("BLEKB", "link connected"); }
   void onDisconnect(NimBLEClient*, int reason) override {
     LOG_INF("BLEKB", "link disconnected reason=%d", reason);
+    BleKeyboardManager::getInstance().notifyDisconnected();
   }
   // Reject the keyboard's conn-param update (some keyboards send one on first keypress and crash
   // NimBLE 2.x if we echo our params back) — keep the negotiated interval. Same fix as MicroSlate.
@@ -55,23 +72,29 @@ static class BleGateClientCallbacks : public NimBLEClientCallbacks {
     LOG_INF("BLEKB", "auth complete encrypted=%d bonded=%d", connInfo.isEncrypted(),
             connInfo.isBonded());
   }
-} gateClientCallbacks;
+} kbClientCallbacks;
 
 // Early-abort scan callback: stop scanning the moment a HID keyboard is spotted. This (a) lets the
 // blocking getResults() return in ~1-2 s instead of the full timeout (keyboards drop out of pairing
 // mode quickly), and (b) ensures the scanner is STOPPED before we connect — NimBLE rejects
 // connect-while-scanning with EBUSY (observed 2026-07-01: found at rssi=-30, connect failed in 1 ms).
-static class GateScanCallbacks : public NimBLEScanCallbacks {
+static class EarlyAbortScanCallbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* dev) override {
     if (dev && dev->isAdvertisingService(NimBLEUUID((uint16_t)0x1812))) {
       NimBLEDevice::getScan()->stop();
     }
   }
-} gateScanCallbacks;
+} earlyAbortScanCallbacks;
 
 BleKeyboardManager& BleKeyboardManager::getInstance() {
   static BleKeyboardManager instance;
   return instance;
+}
+
+void BleKeyboardManager::notifyDisconnected() {
+  // Only a CONNECTED → dropped transition is a "disconnect"; failures during connect keep FAILED.
+  State expected = State::CONNECTED;
+  state_.compare_exchange_strong(expected, State::DISCONNECTED, std::memory_order_acq_rel);
 }
 
 bool BleKeyboardManager::begin() {
@@ -87,7 +110,7 @@ bool BleKeyboardManager::begin() {
 
   if (!NimBLEDevice::init("PaperBit")) {
     LOG_ERR("BLEKB", "NimBLEDevice::init failed");
-    state_ = State::FAILED;
+    state_.store(State::FAILED, std::memory_order_release);
     return false;
   }
 
@@ -100,8 +123,62 @@ bool BleKeyboardManager::begin() {
   NimBLEDevice::setPower(-9);  // lowest verified working TX power (MicroSlate)
 
   initialized_ = true;
-  state_ = State::IDLE;
+  state_.store(State::IDLE, std::memory_order_release);
   LOG_INF("BLEKB", "NimBLE central initialized");
+  return true;
+}
+
+// Shared connect body. peerAddr MUST be a value copy (never a pointer into scan results — see
+// design rule 3). Right after a scan stops the controller can still be transitioning and
+// ble_gap_connect rejects instantly, hence settle + retry.
+bool BleKeyboardManager::connectPeer(const NimBLEAddress& peerAddr, int attempts) {
+  state_.store(State::CONNECTING, std::memory_order_release);
+  client_ = NimBLEDevice::createClient();
+  if (!client_) {
+    LOG_ERR("BLEKB", "createClient failed (connection pool exhausted?)");
+    state_.store(State::FAILED, std::memory_order_release);
+    return false;
+  }
+  client_->setClientCallbacks(&kbClientCallbacks, false);
+  client_->setConnectTimeout(BLEKB_CONNECT_TIMEOUT_MS);
+
+  bool connected = false;
+  for (int attempt = 1; attempt <= attempts && !connected; ++attempt) {
+    if (abort_.load(std::memory_order_acquire)) break;
+    delay(attempt == 1 ? 150 : 350);  // settle before first try, back off on retries
+    connected = client_->connect(peerAddr);
+    if (!connected) {
+      LOG_INF("BLEKB", "connect attempt %d failed (rc=%d), retrying...", attempt,
+              client_->getLastError());
+    }
+  }
+  if (!connected) {
+    LOG_ERR("BLEKB", "connect failed to %s after retries", targetAddr_.c_str());
+    NimBLEDevice::deleteClient(client_);
+    client_ = nullptr;
+    state_.store(State::FAILED, std::memory_order_release);
+    return false;
+  }
+
+  // Best-effort pairing/encryption. Some keyboards need it, some don't — proceed to HID either
+  // way. With bond=true this also creates/refreshes the NVS bond (CONFIG_BT_NIMBLE_NVS_PERSIST=1
+  // in NimBLE-Arduino, so bonds survive deinit and reboot as long as deinit(clearBonds=false)).
+  if (client_->secureConnection()) {
+    LOG_INF("BLEKB", "secureConnection ok");
+  } else {
+    LOG_INF("BLEKB", "secureConnection not established — trying HID anyway");
+  }
+
+  if (!setupHidConnection()) {
+    LOG_ERR("BLEKB", "HID setup/subscribe failed");
+    if (client_->isConnected()) client_->disconnect();
+    state_.store(State::FAILED, std::memory_order_release);
+    return false;
+  }
+
+  memset(prevKeys_, 0, sizeof(prevKeys_));
+  state_.store(State::CONNECTED, std::memory_order_release);
+  LOG_INF("BLEKB", "keyboard connected + subscribed");
   return true;
 }
 
@@ -109,9 +186,9 @@ bool BleKeyboardManager::scanAndConnect(uint32_t timeoutMs) {
   if (!initialized_ && !begin()) return false;
 
   // --- Blocking scan for a device advertising the HID service (0x1812) ---
-  state_ = State::SCANNING;
+  state_.store(State::SCANNING, std::memory_order_release);
   NimBLEScan* scan = NimBLEDevice::getScan();
-  scan->setScanCallbacks(&gateScanCallbacks, false);  // early-abort when a HID keyboard appears
+  scan->setScanCallbacks(&earlyAbortScanCallbacks, false);  // early-abort when a HID keyboard appears
   scan->setActiveScan(true);
   scan->setInterval(1349);
   scan->setWindow(449);
@@ -126,11 +203,13 @@ bool BleKeyboardManager::scanAndConnect(uint32_t timeoutMs) {
   // garbage → ble_gap_connect rc=3 BLE_HS_EINVAL).
   bool found = false;
   NimBLEAddress peerAddr;
+  std::string peerName;
   for (int i = 0; i < results.getCount(); ++i) {
     const NimBLEAdvertisedDevice* dev = results.getDevice(i);
     if (dev && dev->isAdvertisingService(HID_SERVICE_UUID)) {
       found = true;
       peerAddr = dev->getAddress();  // value copy — safe past clearResults()
+      peerName = dev->getName();     // value copy too
       LOG_INF("BLEKB", "found HID device: %s rssi=%d", peerAddr.toString().c_str(),
               dev->getRSSI());
       break;
@@ -142,61 +221,177 @@ bool BleKeyboardManager::scanAndConnect(uint32_t timeoutMs) {
     // Fail loud: Classic-only / USB-dongle keyboards never advertise 0x1812. Empty result is a
     // real, reportable condition, not a silent no-op.
     LOG_ERR("BLEKB", "no BLE HID keyboard found (0x1812) — is it in pairing mode & BLE (not Classic)?");
-    state_ = State::FAILED;
+    state_.store(State::FAILED, std::memory_order_release);
     return false;
   }
 
   targetAddr_ = peerAddr.toString();
   targetAddrType_ = peerAddr.getType();
+  connectedName_ = peerName;
 
-  // --- Connect ---
-  state_ = State::CONNECTING;
-  client_ = NimBLEDevice::createClient();
-  if (!client_) {
-    LOG_ERR("BLEKB", "createClient failed (connection pool exhausted?)");
-    state_ = State::FAILED;
-    return false;
-  }
-  client_->setClientCallbacks(&gateClientCallbacks, false);
-  client_->setConnectTimeout(10000);
+  return connectPeer(peerAddr, 3);
+}
 
-  // Right after a scan stops, the controller can still be transitioning and ble_gap_connect
-  // rejects instantly. Settle briefly and retry a few times. Connect BY ADDRESS (value copy) —
-  // never via the freed scan-result pointer.
-  bool connected = false;
-  for (int attempt = 1; attempt <= 3 && !connected; ++attempt) {
-    delay(attempt == 1 ? 150 : 350);  // settle before first try, back off on retries
-    connected = client_->connect(peerAddr);
-    if (!connected) {
-      LOG_INF("BLEKB", "connect attempt %d failed (rc=%d), retrying...", attempt,
-              client_->getLastError());
+bool BleKeyboardManager::connectToAddress(const std::string& addr, uint8_t addrType,
+                                          const std::string& displayName) {
+  if (!initialized_ && !begin()) return false;
+  if (addr.empty()) return false;
+
+  targetAddr_ = addr;
+  targetAddrType_ = addrType;
+  connectedName_ = displayName;
+  LOG_INF("BLEKB", "direct connect to bonded keyboard %s (type=%u)", addr.c_str(), addrType);
+
+  const NimBLEAddress peerAddr(addr, addrType);
+  return connectPeer(peerAddr, 2);
+}
+
+std::vector<BleKeyboardManager::FoundKeyboard> BleKeyboardManager::scanForKeyboards(uint32_t scanMs) {
+  std::vector<FoundKeyboard> out;
+  if (!initialized_ && !begin()) return out;
+
+  state_.store(State::SCANNING, std::memory_order_release);
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  scan->setScanCallbacks(nullptr, false);  // picker scan: run the FULL window, collect everything
+  scan->setActiveScan(true);               // active scan → we get scan-response names
+  scan->setInterval(1349);
+  scan->setWindow(449);
+  LOG_INF("BLEKB", "picker scan for HID keyboards (%lu ms)...", (unsigned long)scanMs);
+
+  NimBLEScanResults results = scan->getResults(scanMs, false);
+  scan->stop();
+
+  for (int i = 0; i < results.getCount(); ++i) {
+    const NimBLEAdvertisedDevice* dev = results.getDevice(i);
+    if (!dev || !dev->isAdvertisingService(HID_SERVICE_UUID)) continue;
+    // All fields copied BY VALUE — the device objects die with clearResults().
+    FoundKeyboard kb;
+    kb.addr = dev->getAddress().toString();
+    kb.addrType = dev->getAddress().getType();
+    kb.name = dev->getName();
+    kb.rssi = dev->getRSSI();
+    // Dedupe by address, keep strongest RSSI / first non-empty name.
+    bool merged = false;
+    for (auto& existing : out) {
+      if (existing.addr == kb.addr) {
+        if (kb.rssi > existing.rssi) existing.rssi = kb.rssi;
+        if (existing.name.empty() && !kb.name.empty()) existing.name = kb.name;
+        merged = true;
+        break;
+      }
     }
+    if (!merged) out.push_back(std::move(kb));
   }
-  if (!connected) {
-    LOG_ERR("BLEKB", "connect failed to %s after retries", targetAddr_.c_str());
-    NimBLEDevice::deleteClient(client_);
-    client_ = nullptr;
-    state_ = State::FAILED;
+  scan->clearResults();
+
+  LOG_INF("BLEKB", "picker scan done: %u HID device(s)", (unsigned)out.size());
+  state_.store(State::IDLE, std::memory_order_release);
+  return out;
+}
+
+// --------------------------------------------------------------------------------------------
+// Async wrappers: one short-lived worker task so activity loops stay responsive during the
+// 1-3 s connect / multi-second scan. The task only touches the singleton; results are published
+// through busy_ (release) and read by the UI after isBusy() returns false (acquire).
+// --------------------------------------------------------------------------------------------
+
+void BleKeyboardManager::asyncTaskTrampoline(void* param) {
+  auto* self = static_cast<BleKeyboardManager*>(param);
+  self->asyncTaskBody();
+  self->busy_.store(false, std::memory_order_release);
+  vTaskDelete(nullptr);
+}
+
+void BleKeyboardManager::asyncTaskBody() {
+  switch (asyncOp_) {
+    case AsyncOp::CONNECT: {
+      if (!begin()) return;  // state already FAILED
+      bool ok = false;
+      if (!pendingAddr_.empty()) {
+        ok = connectToAddress(pendingAddr_, pendingAddrType_, pendingName_);
+      }
+      if (!ok && !abort_.load(std::memory_order_acquire) &&
+          (pendingAddr_.empty() || pendingScanFallback_)) {
+        if (!pendingAddr_.empty()) {
+          LOG_INF("BLEKB", "direct connect failed — falling back to scan");
+        }
+        scanAndConnect(12000);
+      }
+      break;
+    }
+    case AsyncOp::SCAN: {
+      if (!begin()) return;
+      scanResults_ = scanForKeyboards(pendingScanMs_);
+      break;
+    }
+    case AsyncOp::NONE:
+      break;
+  }
+}
+
+bool BleKeyboardManager::startConnectAsync(const std::string& addr, uint8_t addrType,
+                                           const std::string& displayName, bool scanFallback) {
+  bool expected = false;
+  if (!busy_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    LOG_ERR("BLEKB", "startConnectAsync: worker already running");
     return false;
   }
-
-  // Best-effort pairing/encryption. Some keyboards need it, some don't — proceed to HID either way.
-  if (client_->secureConnection()) {
-    LOG_INF("BLEKB", "secureConnection ok");
-  } else {
-    LOG_INF("BLEKB", "secureConnection not established — trying HID anyway");
-  }
-
-  if (!setupHidConnection()) {
-    LOG_ERR("BLEKB", "HID setup/subscribe failed");
-    if (client_->isConnected()) client_->disconnect();
-    state_ = State::FAILED;
+  abort_.store(false, std::memory_order_release);
+  asyncOp_ = AsyncOp::CONNECT;
+  pendingAddr_ = addr;
+  pendingAddrType_ = addrType;
+  pendingName_ = displayName;
+  pendingScanFallback_ = scanFallback;
+  state_.store(State::CONNECTING, std::memory_order_release);
+  if (xTaskCreate(&asyncTaskTrampoline, "BleKbWork", BLEKB_TASK_STACK, this, 1, nullptr) != pdPASS) {
+    LOG_ERR("BLEKB", "startConnectAsync: task create failed");
+    busy_.store(false, std::memory_order_release);
+    state_.store(State::FAILED, std::memory_order_release);
     return false;
   }
+  return true;
+}
 
-  state_ = State::CONNECTED;
-  memset(prevKeys_, 0, sizeof(prevKeys_));
-  LOG_INF("BLEKB", "keyboard connected + subscribed");
+bool BleKeyboardManager::startScanAsync(uint32_t scanMs) {
+  bool expected = false;
+  if (!busy_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    LOG_ERR("BLEKB", "startScanAsync: worker already running");
+    return false;
+  }
+  abort_.store(false, std::memory_order_release);
+  asyncOp_ = AsyncOp::SCAN;
+  pendingScanMs_ = scanMs;
+  scanResults_.clear();
+  state_.store(State::SCANNING, std::memory_order_release);
+  if (xTaskCreate(&asyncTaskTrampoline, "BleKbWork", BLEKB_TASK_STACK, this, 1, nullptr) != pdPASS) {
+    LOG_ERR("BLEKB", "startScanAsync: task create failed");
+    busy_.store(false, std::memory_order_release);
+    state_.store(State::FAILED, std::memory_order_release);
+    return false;
+  }
+  return true;
+}
+
+void BleKeyboardManager::requestAbort() {
+  abort_.store(true, std::memory_order_release);
+  // Stopping the scanner from another task is safe and makes a blocking getResults() return
+  // early. A connect attempt in flight ends within BLEKB_CONNECT_TIMEOUT_MS; the abort flag is
+  // then honored between retries.
+  if (initialized_) {
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    if (scan && scan->isScanning()) scan->stop();
+  }
+}
+
+bool BleKeyboardManager::forgetAllBonds() {
+  const bool wasInitialized = initialized_;
+  if (!initialized_ && !begin()) return false;
+  NimBLEDevice::deleteAllBonds();
+  LOG_INF("BLEKB", "all NimBLE bonds deleted");
+  if (!wasInitialized) {
+    // We only brought the stack up for the wipe — tear it straight back down.
+    deinit(false);
+  }
   return true;
 }
 
@@ -378,10 +573,27 @@ char BleKeyboardManager::hidToChar(uint8_t hid, uint8_t modifiers) const {
 }
 
 bool BleKeyboardManager::isConnected() const {
-  return state_ == State::CONNECTED && client_ && client_->isConnected();
+  return state_.load(std::memory_order_acquire) == State::CONNECTED && client_ && client_->isConnected();
 }
 
 void BleKeyboardManager::deinit(bool clearBonds) {
+  // Join any running worker first — tearing NimBLE down under a task blocked inside a client
+  // call would crash. Bounded: abort stops the scanner instantly and a connect attempt ends
+  // within BLEKB_CONNECT_TIMEOUT_MS.
+  if (busy_.load(std::memory_order_acquire)) {
+    requestAbort();
+    const unsigned long t0 = millis();
+    while (busy_.load(std::memory_order_acquire) && millis() - t0 < BLEKB_CONNECT_TIMEOUT_MS * 2 + 4000) {
+      delay(20);
+    }
+    if (busy_.load(std::memory_order_acquire)) {
+      // Fail loud and refuse the teardown rather than crash the worker mid-call. The stack stays
+      // up (heap stays allocated) — visible in logs and the next begin() is a no-op.
+      LOG_ERR("BLEKB", "deinit: worker did not stop — SKIPPING teardown (stack left up)");
+      return;
+    }
+  }
+
   if (client_) {
     if (client_->isConnected()) client_->disconnect();
     NimBLEDevice::deleteClient(client_);
@@ -395,8 +607,9 @@ void BleKeyboardManager::deinit(bool clearBonds) {
     NimBLEDevice::deinit(true);  // free the controller heap — critical for the C3 RAM budget
     initialized_ = false;
   }
-  state_ = State::IDLE;
+  state_.store(State::IDLE, std::memory_order_release);
   memset(prevKeys_, 0, sizeof(prevKeys_));
+  connectedName_.clear();
   LOG_INF("BLEKB", "deinit complete (bonds %s)", clearBonds ? "cleared" : "kept");
 }
 

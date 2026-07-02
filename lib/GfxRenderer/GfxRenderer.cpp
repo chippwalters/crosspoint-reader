@@ -1379,6 +1379,22 @@ bool GfxRenderer::copyBufferToRegion(int lx, int ly, int lw, int lh, const uint8
   return true;
 }
 
+void GfxRenderer::displayWindow(const int x, const int y, const int width, const int height) const {
+  // Rotate the logical rect to physical panel bounds (inclusive, clamped).
+  int x0, y0, x1, y1;
+  if (!logicalRectToPhysicalBounds(orientation, x, y, width, height, panelWidth, panelHeight, &x0, &y0, &x1, &y1)) {
+    LOG_ERR("GFX", "displayWindow: rect (%d,%d %dx%d) off-panel — nothing refreshed", x, y, width, height);
+    return;
+  }
+  // The panel controller addresses RAM in bytes: widen x to the enclosing 8-pixel boundaries.
+  const int phyX = x0 & ~7;
+  const int phyW = ((x1 + 1 - phyX + 7) / 8) * 8;
+  const int phyY = y0;
+  const int phyH = y1 - y0 + 1;
+  display.displayWindow(static_cast<uint16_t>(phyX), static_cast<uint16_t>(phyY), static_cast<uint16_t>(phyW),
+                        static_cast<uint16_t>(phyH));
+}
+
 int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style style) const {
   // Advance table fast-path for SD card fonts during layout
   auto sdIt = sdCardFonts_.find(fontId);

@@ -16,7 +16,19 @@
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
 
-enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU, MY_VAULT, PAPERBIT_FETCH };
+enum class HomeMenuItem {
+  NONE,
+  FILE_BROWSER,
+  RECENTS,
+  OPDS_BROWSER,
+  FILE_TRANSFER,
+  SETTINGS_MENU,
+  MY_VAULT,
+  PAPERBIT_FETCH,
+#ifdef ENABLE_BLE_KEYBOARD
+  NOTES,  // BLE-keyboard typewriter notes (compiled out of default/slim builds)
+#endif
+};
 
 /**
  * ActivityManager
@@ -84,6 +96,9 @@ class ActivityManager {
   void goToSettings();
   void goToVault();
   void goToPaperbitFetch();
+#ifdef ENABLE_BLE_KEYBOARD
+  void goToNotes();
+#endif
   void goToFileBrowser(std::string path = {});
   void goToRecentBooks();
   void goToBrowser();

@@ -92,6 +92,9 @@ class HalFile : public Print {
   int read();  // read a single byte
   size_t write(const void* buf, size_t count);
   size_t write(uint8_t b) override;
+  // Truncate (or extend with zeros) the file to exactly `size` bytes. Used by the note editor's
+  // tail-rewrite auto-save so backspace edits shrink the file on disk.
+  bool truncate(uint64_t size);
   bool rename(const char* newPath);
   bool isDirectory() const;
   void rewindDirectory();

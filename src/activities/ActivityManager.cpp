@@ -21,6 +21,10 @@
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
+#ifdef ENABLE_BLE_KEYBOARD
+#include "notes/NotesListActivity.h"
+#endif
+
 void ActivityManager::begin() {
   xTaskCreate(&renderTaskTrampoline, "ActivityManagerRender",
               8192,              // Stack size
@@ -183,6 +187,10 @@ void ActivityManager::goToPaperbitFetch() {
   replaceActivity(std::make_unique<PaperbitFetchActivity>(renderer, mappedInput));
 }
 
+#ifdef ENABLE_BLE_KEYBOARD
+void ActivityManager::goToNotes() { replaceActivity(std::make_unique<NotesListActivity>(renderer, mappedInput)); }
+#endif
+
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
@@ -229,6 +237,10 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
       initialMenuItem = HomeMenuItem::FILE_TRANSFER;
     } else if (activityName == "Settings") {
       initialMenuItem = HomeMenuItem::SETTINGS_MENU;
+#ifdef ENABLE_BLE_KEYBOARD
+    } else if (activityName == "NotesList") {
+      initialMenuItem = HomeMenuItem::NOTES;
+#endif
     }
   }
   replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem));

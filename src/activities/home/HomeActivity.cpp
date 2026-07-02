@@ -23,6 +23,9 @@
 
 int HomeActivity::getMenuItemCount() const {
   int count = 6;  // File Browser, Recents, File transfer, Settings, My Vault, Paperbit Fetch
+#ifdef ENABLE_BLE_KEYBOARD
+  count++;  // Notes (BLE-keyboard typewriter)
+#endif
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -207,6 +210,11 @@ void HomeActivity::loop() {
         case HomeMenuItem::PAPERBIT_FETCH:
           onPaperbitFetchOpen();
           break;
+#ifdef ENABLE_BLE_KEYBOARD
+        case HomeMenuItem::NOTES:
+          onNotesOpen();
+          break;
+#endif
         default:
           break;
       }
@@ -258,6 +266,13 @@ void HomeActivity::render(RenderLock&&) {
                                         tr(STR_SETTINGS_TITLE), "My Vault", "Paperbit Fetch"};
   std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings, Lock, Fetch};
 
+#ifdef ENABLE_BLE_KEYBOARD
+  // BLE-keyboard typewriter notes. Appended at the end so the existing index mapping is stable;
+  // compiled out entirely without the flag.
+  menuItems.push_back("Notes");
+  menuIcons.push_back(Text);
+#endif
+
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
     menuIcons.insert(menuIcons.begin() + 2, Library);
@@ -304,6 +319,10 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onPaperbitFetchOpen() { activityManager.goToPaperbitFetch(); }
+
+#ifdef ENABLE_BLE_KEYBOARD
+void HomeActivity::onNotesOpen() { activityManager.goToNotes(); }
+#endif
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 

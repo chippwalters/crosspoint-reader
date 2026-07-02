@@ -24,6 +24,9 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   About,
+#ifdef ENABLE_BLE_KEYBOARD
+  BleKeyboard,  // Settings > Keyboard: pair/forget a BLE HID keyboard (Notes typewriter)
+#endif
 };
 
 struct SettingInfo {
