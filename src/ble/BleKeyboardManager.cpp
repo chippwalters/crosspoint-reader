@@ -57,6 +57,18 @@ static class BleGateClientCallbacks : public NimBLEClientCallbacks {
   }
 } gateClientCallbacks;
 
+// Early-abort scan callback: stop scanning the moment a HID keyboard is spotted. This (a) lets the
+// blocking getResults() return in ~1-2 s instead of the full timeout (keyboards drop out of pairing
+// mode quickly), and (b) ensures the scanner is STOPPED before we connect — NimBLE rejects
+// connect-while-scanning with EBUSY (observed 2026-07-01: found at rssi=-30, connect failed in 1 ms).
+static class GateScanCallbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* dev) override {
+    if (dev && dev->isAdvertisingService(NimBLEUUID((uint16_t)0x1812))) {
+      NimBLEDevice::getScan()->stop();
+    }
+  }
+} gateScanCallbacks;
+
 BleKeyboardManager& BleKeyboardManager::getInstance() {
   static BleKeyboardManager instance;
   return instance;
@@ -99,12 +111,14 @@ bool BleKeyboardManager::scanAndConnect(uint32_t timeoutMs) {
   // --- Blocking scan for a device advertising the HID service (0x1812) ---
   state_ = State::SCANNING;
   NimBLEScan* scan = NimBLEDevice::getScan();
+  scan->setScanCallbacks(&gateScanCallbacks, false);  // early-abort when a HID keyboard appears
   scan->setActiveScan(true);
   scan->setInterval(1349);
   scan->setWindow(449);
   LOG_INF("BLEKB", "scanning for HID keyboard (%lu ms)...", (unsigned long)timeoutMs);
 
   NimBLEScanResults results = scan->getResults(timeoutMs, false);
+  scan->stop();  // must be fully stopped before connect (EBUSY otherwise)
 
   const NimBLEAdvertisedDevice* target = nullptr;
   for (int i = 0; i < results.getCount(); ++i) {

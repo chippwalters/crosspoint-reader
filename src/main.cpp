@@ -690,6 +690,11 @@ void loop() {
         auto largestB = [&]() { return (unsigned)heap_caps_get_largest_free_block(CAPS); };
 
         RenderLock lock;  // keeps both static framebuffers the sole render owner during measurement
+        // CRITICAL: the idle timer drops the CPU to 10 MHz (LOW_POWER_FREQ) after 3 s, and the
+        // ESP32-C3 BLE controller DEADLOCKS if inited below 80 MHz — hold normal CPU speed for the
+        // entire BLE session (init → scan → connect → subscribed → deinit). Root cause of the
+        // 2026-07-01 gate hang: BLEGATE_START printed at 10 MHz, NimBLEDevice::init() never returned.
+        HalPowerManager::Lock powerLock;
         auto& kb = BleKeyboardManager::getInstance();
         logSerial.printf("BLEGATE_START free=%u largest=%u\n", freeB(), largestB());
 
