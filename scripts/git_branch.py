@@ -1,9 +1,13 @@
 """
 PlatformIO pre-build script: inject git branch and short SHA into
-CROSSPOINT_VERSION for the default (dev) environment.
+CROSSPOINT_VERSION for the git-stamped (dev) environments.
 
 Results in a version string like:  1.1.0-dev-feat-kosync-xpath-05c6cf8
-Release environments are unaffected; they set CROSSPOINT_VERSION in the ini.
+                            or:      1.4.13-ble-paperbit-05c6cf8   (env:ble)
+
+Release environments (gh_release*, slim) are unaffected — they set
+CROSSPOINT_VERSION themselves in platformio.ini and must NOT be listed in
+GIT_STAMPED_ENVS below.
 """
 
 import configparser
@@ -76,17 +80,28 @@ def get_base_version(project_dir):
     return config.get('crosspoint', 'version')
 
 
+# Environments that get a git-stamped CROSSPOINT_VERSION injected here.
+# Maps PlatformIO env name -> the channel label used in the version string
+# ({base}-{channel}-{branch}-{sha}). Release envs (gh_release*, slim) set the
+# version themselves in platformio.ini and must NOT be listed here.
+GIT_STAMPED_ENVS = {
+    'default': 'dev',
+    'ble': 'ble',
+}
+
+
 def inject_version(env):
-    # Only applies to the dev (default) environment; release envs set the
+    # Only applies to the git-stamped (dev) environments; release envs set the
     # version via build_flags in platformio.ini and are unaffected.
-    if env['PIOENV'] != 'default':
+    channel = GIT_STAMPED_ENVS.get(env['PIOENV'])
+    if channel is None:
         return
 
     project_dir = env['PROJECT_DIR']
     base_version = get_base_version(project_dir)
     branch = get_git_branch(project_dir)
     short_sha = get_git_short_sha(project_dir)
-    version_string = f'{base_version}-dev-{branch}-{short_sha}'
+    version_string = f'{base_version}-{channel}-{branch}-{short_sha}'
 
     env.Append(CPPDEFINES=[('CROSSPOINT_VERSION', f'\\"{version_string}\\"')])
     print(f'CrossPoint build version: {version_string}')
