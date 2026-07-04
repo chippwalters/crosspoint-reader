@@ -56,7 +56,11 @@ def after_bin(source, target, env):  # noqa: ARG001
     short = _git(project_dir, ["rev-parse", "--short", "HEAD"])
     base = _base_version(project_dir)
 
-    version = f"{base}-dev-{branch}-{short}"
+    # Channel label per env — MUST mirror GIT_STAMPED_ENVS in git_branch.py so the manifest
+    # version equals the compiled-in CROSSPOINT_VERSION (else the OTA tag / client-shown version
+    # diverges from what the device reports). Non-git-stamped envs fall back to "dev".
+    channel = {"default": "dev", "ble": "ble"}.get(env["PIOENV"], "dev")
+    version = f"{base}-{channel}-{branch}-{short}"
     manifest = {
         "target": "esp32c3",
         "product": "crosspoint-reader",
