@@ -146,23 +146,12 @@ void OtaUpdateActivity::render(RenderLock&&) {
 void OtaUpdateActivity::loop() {
   if (state == WAITING_CONFIRMATION) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("OTA", "New update available, starting download...");
-      {
-        RenderLock lock(*this);
-        state = UPDATE_IN_PROGRESS;
-      }
-      requestUpdateAndWait();
-      const auto res = updater.installUpdate(
-          [](void* ctx) {
-            // immediate=true notifies the render task directly. The default deferred path only
-            // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
-            // installUpdate() blocks this task.
-            static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
-          },
-          this);
-
-      if (res != OtaUpdater::OK) {
-        LOG_DBG("OTA", "Update failed: %d", res);
+      // Reboot-to-install: persist the confirmed update and restart. Installing here fails on
+      // the C3 — the check's TLS session fragments the heap and the install's second handshake
+      // dies in cert verification (see OtaUpdater.h). Early boot installs with a pristine heap.
+      LOG_INF("OTA", "Update confirmed - saving pending install and rebooting");
+      if (!OtaUpdater::savePending(updater.getOtaUrl(), updater.getLatestVersion(), updater.getOtaSize())) {
+        LOG_ERR("OTA", "Failed to persist pending install");
         {
           RenderLock lock(*this);
           state = FAILED;
@@ -170,18 +159,15 @@ void OtaUpdateActivity::loop() {
         requestUpdate();
         return;
       }
-
       {
         RenderLock lock(*this);
-        state = FINISHED;
+        renderer.clearScreen();
+        renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, "Restarting to install...", true,
+                                  EpdFontFamily::BOLD);
+        renderer.displayBuffer();
       }
-      requestUpdateAndWait();
-      // Hold the completion screen briefly so the user sees it, then restart.
-      delay(3000);
-      {
-        RenderLock lock(*this);
-        state = SHUTTING_DOWN;
-      }
+      delay(800);
+      ESP.restart();
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {

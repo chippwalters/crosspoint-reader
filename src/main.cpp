@@ -29,6 +29,8 @@
 #include "activities/ActivityManager.h"
 #include "Epub/Page.h"                       // TEMP: complete Page type for the verify command's unique_ptr<Page>
 #include "Epub/markdown/MarkdownSection.h"  // TEMP: MD on-device verify command (remove before release)
+#include "WifiCredentialStore.h"  // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
+#include "network/OtaUpdater.h"   // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "crypto/VaultCrypto.h"
 #include "network/SerialFileTransfer.h"
@@ -311,6 +313,79 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
+// If a wireless-update confirmation persisted a pending install, run it now — at early boot the
+// heap is unfragmented, so the TLS handshake gets the contiguous blocks it needs. In-activity
+// installs fail on the C3: after the check's TLS session the largest free block collapses below
+// what a second mbedtls handshake needs and cert verification dies with a bogus -0x3000 (see
+// OtaUpdater.h). One TLS connection per boot. On success this reboots into the new firmware;
+// on failure it fails LOUD on-screen and continues the normal boot on the current firmware.
+static void maybeRunPendingOta() {
+  std::string url, version;
+  size_t size = 0;
+  if (!OtaUpdater::loadPending(url, version, size)) return;
+  OtaUpdater::clearPending();  // one-shot BEFORE attempting — a crash can't loop the install
+  LOG_INF("OTA", "Pending install: %s (%u bytes)", version.c_str(), (unsigned)size);
+
+  const int cy = renderer.getScreenHeight() / 2;
+  renderer.clearScreen();
+  renderer.drawCenteredText(UI_10_FONT_ID, cy - 40, "Installing update...", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(SMALL_FONT_ID, cy, version.c_str());
+  renderer.drawCenteredText(SMALL_FONT_ID, cy + 40, "Keep the device powered");
+  renderer.displayBuffer();
+
+  bool ok = false;
+  WIFI_STORE.loadFromFile();
+  const auto* cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
+  if (!cred) {
+    LOG_ERR("OTA", "pending install: no saved Wi-Fi credential");
+  } else {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+    const unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) delay(250);
+    if (WiFi.status() != WL_CONNECTED) {
+      LOG_ERR("OTA", "pending install: Wi-Fi connect failed (status=%d)", (int)WiFi.status());
+    } else {
+      WiFi.setSleep(false);  // PS corrupts traffic on some APs (see WifiSelectionActivity)
+      LOG_INF("OTA", "pending install heap: free=%u largest=%u", (unsigned)ESP.getFreeHeap(),
+              (unsigned)ESP.getMaxAllocHeap());
+      static OtaUpdater updater;
+      updater.seedUpdate(url, version, size);
+      static unsigned lastPct = 200;
+      const auto res = updater.installUpdate(
+          [](void* ctx) {
+            auto* u = static_cast<OtaUpdater*>(ctx);
+            if (!u->getTotalSize()) return;
+            const unsigned pct = (unsigned)((uint64_t)u->getProcessedSize() * 100 / u->getTotalSize());
+            if (pct != lastPct && pct % 10 == 0) {
+              lastPct = pct;
+              LOG_INF("OTA", "install %u%%", pct);
+            }
+          },
+          &updater);
+      ok = (res == OtaUpdater::OK);
+      if (!ok) LOG_ERR("OTA", "pending install FAILED: %d", (int)res);
+    }
+  }
+
+  if (ok) {
+    renderer.clearScreen();
+    renderer.drawCenteredText(UI_10_FONT_ID, cy, "Update complete - restarting", true, EpdFontFamily::BOLD);
+    renderer.displayBuffer();
+    delay(1200);
+    ESP.restart();
+  }
+
+  // Fail loud, then boot normally on the current firmware.
+  renderer.clearScreen();
+  renderer.drawCenteredText(UI_10_FONT_ID, cy, "Update FAILED", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(SMALL_FONT_ID, cy + 40, "Continuing with current firmware");
+  renderer.displayBuffer();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(2500);
+}
+
 void setup() {
   t1 = millis();
 
@@ -419,6 +494,10 @@ void setup() {
                                                         : BootResume::Splash;
 
   setupDisplayAndFonts(resume != BootResume::Splash);
+
+  // Consume a persisted wireless-update confirmation while the heap is still pristine —
+  // before any activity, book, or cache allocations (reboots into the new firmware on success).
+  maybeRunPendingOta();
 
   switch (resume) {
     case BootResume::Silent:
@@ -677,6 +756,49 @@ void loop() {
         setSerialLogMuted(false);
         logSerial.printf("SCREENSHOT_END\n");
         logSerial.printf("MDTOC_END\n");
+      } else if (cmd == "OTAINSTALL") {
+        // TEMP wireless-OTA driver (remove before release) — mirrors the Settings flow: check
+        // (this boot's first TLS connection), persist the pending install, reboot; the early-boot
+        // hook (maybeRunPendingOta) performs the actual install with a pristine heap. Driven by
+        // x4-client tools/_pbotainstall.cjs.
+        RenderLock lock;
+        HalPowerManager::Lock powerLock;
+        logSerial.printf("OTAINSTALL_START free=%u largest=%u\n", (unsigned)ESP.getFreeHeap(),
+                         (unsigned)ESP.getMaxAllocHeap());
+        WIFI_STORE.loadFromFile();
+        const auto* cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
+        if (!cred) {
+          logSerial.printf("OTAINSTALL_ERR no stored credential\n");
+        } else {
+          WiFi.mode(WIFI_STA);
+          WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+          const unsigned long t0 = millis();
+          while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+            delay(250);
+            yield();
+          }
+          if (WiFi.status() != WL_CONNECTED) {
+            logSerial.printf("OTAINSTALL_ERR wifi connect timeout status=%d\n", (int)WiFi.status());
+          } else {
+            WiFi.setSleep(false);  // same policy as the fixed WifiSelectionActivity path
+            OtaUpdater updater;
+            const auto chk = updater.checkForUpdate();
+            logSerial.printf("OTAINSTALL_CHECK res=%d newer=%d latest=%s\n", (int)chk,
+                             updater.isUpdateNewer() ? 1 : 0, updater.getLatestVersion().c_str());
+            if (chk == OtaUpdater::OK && updater.isUpdateNewer()) {
+              if (OtaUpdater::savePending(updater.getOtaUrl(), updater.getLatestVersion(), updater.getOtaSize())) {
+                logSerial.printf("OTAINSTALL_PENDING_SAVED rebooting to install...\n");
+                logSerial.flush();
+                delay(300);
+                ESP.restart();
+              }
+              logSerial.printf("OTAINSTALL_ERR pending save failed\n");
+            }
+          }
+          WiFi.disconnect(true);
+          WiFi.mode(WIFI_OFF);
+        }
+        logSerial.printf("OTAINSTALL_END free=%u\n", (unsigned)ESP.getFreeHeap());
       }
     }
   }

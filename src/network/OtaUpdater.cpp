@@ -14,6 +14,8 @@
 #include <esp_wifi.h>
 // clang-format on
 
+#include <ArduinoJson.h>
+
 #include <string>
 
 namespace {
@@ -22,6 +24,9 @@ namespace {
 // paperbit/webtool/publish-firmware.ps1 (tag_name + an asset named "firmware.bin" whose
 // browser_download_url points at the versioned binary). ReleaseJsonParser reads it unchanged.
 constexpr char latestReleaseUrl[] = "https://www.widgetgadget.com/cw1/Paperbit/release.json";
+
+// Persisted confirmed-update for the reboot-to-install flow (see OtaUpdater.h).
+constexpr char OTA_PENDING_FILE[] = "/.crosspoint/ota_pending.json";
 
 esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
   return esp_http_client_set_header(http_client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
@@ -144,11 +149,21 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   /* For better timing and connectivity, we disable power saving for WiFi */
   esp_wifi_set_ps(WIFI_PS_NONE);
 
+  // Heap diagnostics: the install's TLS handshake needs contiguous internal RAM on top of
+  // whatever the caller left resident. mbedtls allocation failures during the handshake
+  // surface as bogus "certificate verification failed" (-0x3000) errors, so log the real
+  // conditions up front (2026-07-07 field failure: check OK, install handshake failed).
+  LOG_INF("OTA", "install pre-begin heap: free=%u largest=%u", (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
+
   esp_err = esp_https_ota_begin(&ota_config, &ota_handle);
   if (esp_err != ESP_OK) {
-    LOG_DBG("OTA", "HTTP OTA Begin Failed: %s", esp_err_to_name(esp_err));
+    LOG_ERR("OTA", "HTTP OTA Begin Failed: %s (heap free=%u largest=%u)", esp_err_to_name(esp_err),
+            (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     return INTERNAL_UPDATE_ERROR;
   }
+  LOG_INF("OTA", "install begin OK: heap free=%u largest=%u", (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
 
   int lastReportedPct = -1;
   do {
@@ -191,4 +206,47 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
   LOG_INF("OTA", "Update completed");
   return OK;
+}
+
+// --- Reboot-to-install persistence (see header) ------------------------------------------------
+
+void OtaUpdater::seedUpdate(const std::string& url, const std::string& version, size_t size) {
+  otaUrl = url;
+  latestVersion = version;
+  otaSize = size;
+  totalSize = size;
+  processedSize = 0;
+  updateAvailable = true;
+}
+
+bool OtaUpdater::savePending(const std::string& url, const std::string& version, size_t size) {
+  JsonDocument doc;
+  doc["url"] = url;
+  doc["version"] = version;
+  doc["size"] = static_cast<uint32_t>(size);
+  String json;
+  serializeJson(doc, json);
+  Storage.mkdir("/.crosspoint");
+  const bool ok = Storage.writeFile(OTA_PENDING_FILE, json);
+  if (!ok) LOG_ERR("OTA", "savePending: write failed for %s", OTA_PENDING_FILE);
+  return ok;
+}
+
+bool OtaUpdater::loadPending(std::string& url, std::string& version, size_t& size) {
+  if (!Storage.exists(OTA_PENDING_FILE)) return false;
+  const String json = Storage.readFile(OTA_PENDING_FILE);
+  if (json.isEmpty()) return false;
+  JsonDocument doc;
+  if (deserializeJson(doc, json)) {
+    LOG_ERR("OTA", "loadPending: bad JSON in %s", OTA_PENDING_FILE);
+    return false;
+  }
+  url = doc["url"] | std::string("");
+  version = doc["version"] | std::string("");
+  size = doc["size"] | 0;
+  return !url.empty() && !version.empty();
+}
+
+void OtaUpdater::clearPending() {
+  if (Storage.exists(OTA_PENDING_FILE)) Storage.remove(OTA_PENDING_FILE);
 }
