@@ -136,7 +136,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
       // with the TLS handshake on a tight internal arena, so keep them minimal.
       .buffer_size = 4096,
       .buffer_size_tx = 1024,
-      .skip_cert_common_name_check = true,
+      // NEVER set skip_cert_common_name_check here: esp-tls implements it as
+      // mbedtls_ssl_set_hostname(ssl, NULL), which also disables SNI — a name-based
+      // vhost then serves its DEFAULT certificate and the CA bundle correctly rejects
+      // it ("Failed to verify certificate", -0x3000). Field-diagnosed 2026-07-07.
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
