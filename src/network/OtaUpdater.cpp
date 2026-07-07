@@ -27,9 +27,10 @@ namespace {
 // Plain HTTP by design (server serves it without a redirect): the in-session TLS handshake is
 // heap-marginal on the C3 — especially on the ble build (~30 KB less total heap) — and fails
 // with PK-verify/MPI-alloc errors when the largest free block is squeezed (field-measured
-// 2026-07-07). The 302-byte check needs no confidentiality; the firmware IMAGE download runs at
-// early boot (pristine heap) and stays HTTPS. Note: the device has no firmware signature
-// enforcement anyway (see gen_manifest.py) — the A/B slots are the rollback safety.
+// 2026-07-07). The 302-byte check needs no confidentiality; the firmware IMAGE download (early
+// boot) is ALSO plain http — publish-firmware.ps1 emits http:// browser_download_urls. The
+// device has no firmware signature enforcement anyway (see gen_manifest.py) — image validation
+// + the A/B slots are the rollback safety.
 constexpr char latestReleaseUrl[] = "http://www.widgetgadget.com/cw1/Paperbit/release.json";
 
 // Persisted confirmed-update for the reboot-to-install flow (see OtaUpdater.h).
