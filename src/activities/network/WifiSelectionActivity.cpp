@@ -244,6 +244,17 @@ void WifiSelectionActivity::checkConnectionStatus() {
     connectedIP = ipStr;
     autoConnecting = false;
 
+    // Disable modem power-save for the whole Wi-Fi session. The default
+    // WIFI_PS_MIN_MODEM breaks traffic on some routers: NETDIAG (2026-07-06,
+    // mesh AP) showed TCP connects aborting (ERR_ABRT after ~18 s) and TLS
+    // handshakes failing cert verification with PS on, while the identical
+    // fetch succeeds instantly with PS off. Upstream already does this for
+    // the web server (CrossPointWebServer.cpp) and the OTA installer
+    // (OtaUpdater.cpp); this is the common chokepoint every Wi-Fi consumer
+    // (Fetch, OTA check, OPDS) passes through. Power cost only applies while
+    // Wi-Fi is up, which is transient in this product.
+    WiFi.setSleep(false);
+
     // Sync RTC from NTP on the first successful WiFi connection only. The DS3231
     // drifts ~2 ppm so one sync is enough; users can force a re-sync from
     // Settings > Customise Status Bar > Sync clock now.
