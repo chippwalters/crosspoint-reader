@@ -29,8 +29,10 @@
 #include "activities/ActivityManager.h"
 #include "Epub/Page.h"                       // TEMP: complete Page type for the verify command's unique_ptr<Page>
 #include "Epub/markdown/MarkdownSection.h"  // TEMP: MD on-device verify command (remove before release)
-#include "WifiCredentialStore.h"  // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
-#include "network/OtaUpdater.h"   // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
+#include "WifiCredentialStore.h"     // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
+#include "network/FirmwareFlasher.h" // early-boot pending-OTA install: flash the downloaded image
+#include "network/HttpDownloader.h"  // early-boot pending-OTA install: download the image to SD
+#include "network/OtaUpdater.h"      // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "crypto/VaultCrypto.h"
 #include "network/SerialFileTransfer.h"
@@ -313,12 +315,14 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
-// If a wireless-update confirmation persisted a pending install, run it now — at early boot the
-// heap is unfragmented, so the TLS handshake gets the contiguous blocks it needs. In-activity
-// installs fail on the C3: after the check's TLS session the largest free block collapses below
-// what a second mbedtls handshake needs and cert verification dies with a bogus -0x3000 (see
-// OtaUpdater.h). One TLS connection per boot. On success this reboots into the new firmware;
-// on failure it fails LOUD on-screen and continues the normal boot on the current firmware.
+// If a wireless-update confirmation persisted a pending install, run it now — at early boot,
+// before any activity/book/cache allocations. The image is DOWNLOADED TO SD via the proven
+// HttpDownloader TLS path and then flashed from the file via firmware_flash::flashFromSdPath
+// (the same file->partition core the SD-update and USB-install flows use). esp_https_ota is
+// deliberately NOT used: its TLS setup consistently fails cert verification on this core even
+// with a pristine heap, while HttpDownloader's succeeds (field-diagnosed 2026-07-07). On success
+// this reboots into the new firmware; on failure it fails LOUD on-screen and continues the
+// normal boot on the current firmware.
 static void maybeRunPendingOta() {
   std::string url, version;
   size_t size = 0;
@@ -326,6 +330,7 @@ static void maybeRunPendingOta() {
   OtaUpdater::clearPending();  // one-shot BEFORE attempting — a crash can't loop the install
   LOG_INF("OTA", "Pending install: %s (%u bytes)", version.c_str(), (unsigned)size);
 
+  constexpr char DL_PATH[] = "/.crosspoint/ota_download.bin";
   const int cy = renderer.getScreenHeight() / 2;
   renderer.clearScreen();
   renderer.drawCenteredText(UI_10_FONT_ID, cy - 40, "Installing update...", true, EpdFontFamily::BOLD);
@@ -349,22 +354,40 @@ static void maybeRunPendingOta() {
       WiFi.setSleep(false);  // PS corrupts traffic on some APs (see WifiSelectionActivity)
       LOG_INF("OTA", "pending install heap: free=%u largest=%u", (unsigned)ESP.getFreeHeap(),
               (unsigned)ESP.getMaxAllocHeap());
-      static OtaUpdater updater;
-      updater.seedUpdate(url, version, size);
+
+      // 1. Download the image to SD over the proven TLS path (streams in 2 KB chunks).
       static unsigned lastPct = 200;
-      const auto res = updater.installUpdate(
-          [](void* ctx) {
-            auto* u = static_cast<OtaUpdater*>(ctx);
-            if (!u->getTotalSize()) return;
-            const unsigned pct = (unsigned)((uint64_t)u->getProcessedSize() * 100 / u->getTotalSize());
-            if (pct != lastPct && pct % 10 == 0) {
-              lastPct = pct;
-              LOG_INF("OTA", "install %u%%", pct);
-            }
-          },
-          &updater);
-      ok = (res == OtaUpdater::OK);
-      if (!ok) LOG_ERR("OTA", "pending install FAILED: %d", (int)res);
+      const auto dl = HttpDownloader::downloadToFile(url, DL_PATH, [](size_t done, size_t total) {
+        if (!total) return;
+        const unsigned pct = (unsigned)((uint64_t)done * 100 / total);
+        if (pct != lastPct && pct % 10 == 0) {
+          lastPct = pct;
+          LOG_INF("OTA", "download %u%%", pct);
+        }
+      });
+      if (dl != HttpDownloader::OK) {
+        LOG_ERR("OTA", "pending install: download failed (%d)", (int)dl);
+      } else {
+        // Wi-Fi is no longer needed; free the radio + its heap before flashing.
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+
+        // 2. Flash from the SD file (validates the image header + size internally).
+        const auto res = firmware_flash::flashFromSdPath(
+            DL_PATH,
+            +[](size_t written, size_t total, void*) {
+              if (!total) return;
+              const unsigned pct = (unsigned)((uint64_t)written * 100 / total);
+              if (pct != lastPct && pct % 10 == 0) {
+                lastPct = pct;
+                LOG_INF("OTA", "flash %u%%", pct);
+              }
+            },
+            nullptr);
+        ok = (res == firmware_flash::Result::OK);
+        if (!ok) LOG_ERR("OTA", "pending install: flash failed: %s", firmware_flash::resultName(res));
+      }
+      Storage.remove(DL_PATH);  // temp image: remove on success and failure alike
     }
   }
 
