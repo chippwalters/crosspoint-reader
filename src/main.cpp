@@ -779,49 +779,6 @@ void loop() {
         setSerialLogMuted(false);
         logSerial.printf("SCREENSHOT_END\n");
         logSerial.printf("MDTOC_END\n");
-      } else if (cmd == "OTAINSTALL") {
-        // TEMP wireless-OTA driver (remove before release) — mirrors the Settings flow: check
-        // (this boot's first TLS connection), persist the pending install, reboot; the early-boot
-        // hook (maybeRunPendingOta) performs the actual install with a pristine heap. Driven by
-        // x4-client tools/_pbotainstall.cjs.
-        RenderLock lock;
-        HalPowerManager::Lock powerLock;
-        logSerial.printf("OTAINSTALL_START free=%u largest=%u\n", (unsigned)ESP.getFreeHeap(),
-                         (unsigned)ESP.getMaxAllocHeap());
-        WIFI_STORE.loadFromFile();
-        const auto* cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
-        if (!cred) {
-          logSerial.printf("OTAINSTALL_ERR no stored credential\n");
-        } else {
-          WiFi.mode(WIFI_STA);
-          WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
-          const unsigned long t0 = millis();
-          while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
-            delay(250);
-            yield();
-          }
-          if (WiFi.status() != WL_CONNECTED) {
-            logSerial.printf("OTAINSTALL_ERR wifi connect timeout status=%d\n", (int)WiFi.status());
-          } else {
-            WiFi.setSleep(false);  // same policy as the fixed WifiSelectionActivity path
-            OtaUpdater updater;
-            const auto chk = updater.checkForUpdate();
-            logSerial.printf("OTAINSTALL_CHECK res=%d newer=%d latest=%s\n", (int)chk,
-                             updater.isUpdateNewer() ? 1 : 0, updater.getLatestVersion().c_str());
-            if (chk == OtaUpdater::OK && updater.isUpdateNewer()) {
-              if (OtaUpdater::savePending(updater.getOtaUrl(), updater.getLatestVersion(), updater.getOtaSize())) {
-                logSerial.printf("OTAINSTALL_PENDING_SAVED rebooting to install...\n");
-                logSerial.flush();
-                delay(300);
-                ESP.restart();
-              }
-              logSerial.printf("OTAINSTALL_ERR pending save failed\n");
-            }
-          }
-          WiFi.disconnect(true);
-          WiFi.mode(WIFI_OFF);
-        }
-        logSerial.printf("OTAINSTALL_END free=%u\n", (unsigned)ESP.getFreeHeap());
       }
     }
   }
