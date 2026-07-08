@@ -58,6 +58,14 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
 // success so the caller can immediately reread it for flashing.
 Result validateImageFile(const char* sdPath, size_t partitionSize);
 
+// Compute the SHA-256 of the entire file at `sdPath` and write it as a
+// lowercase 64-char hex string (+ NUL) into `outHex[65]`. Streams the file in
+// CHUNK-sized reads (no whole-image buffering — C3 heap). Returns OK, OPEN_FAIL,
+// READ_FAIL, or OOM. Used by the wireless-OTA path to verify a downloaded image
+// against the feed-published sha256 before flashing (trusted-feed integrity, on
+// top of the image's own internal checks in validateImageFile).
+Result sha256HexOfFile(const char* sdPath, char outHex[65]);
+
 const char* resultName(Result r);
 
 }  // namespace firmware_flash

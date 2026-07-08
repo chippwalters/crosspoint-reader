@@ -20,6 +20,8 @@ class ReleaseJsonParser {
   const char* getTagName() const;
   const char* getFirmwareUrl() const;
   size_t getFirmwareSize() const;
+  // Optional per-asset "sha256" (64 hex chars) — empty string when the feed omits it.
+  const char* getFirmwareSha256() const;
 
  private:
   enum class Position : uint8_t {
@@ -35,6 +37,7 @@ class ReleaseJsonParser {
     ASSET_NAME,
     ASSET_URL,
     ASSET_SIZE,
+    ASSET_SHA256,
   };
 
   static void sOnKey(void* ctx, const char* key, size_t len);
@@ -58,11 +61,13 @@ class ReleaseJsonParser {
 
   char tagName[32];
   char firmwareUrl[512];
+  char firmwareSha256[65];
   size_t firmwareSize;
   bool tagFound;
   bool firmwareFound;
 
   char currentAssetName[32];
   char currentAssetUrl[512];
+  char currentAssetSha256[65];
   size_t currentAssetSize;
 };

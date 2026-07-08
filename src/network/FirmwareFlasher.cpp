@@ -226,6 +226,47 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   return Result::OK;
 }
 
+Result sha256HexOfFile(const char* sdPath, char outHex[65]) {
+  outHex[0] = '\0';
+  HalFile file;
+  if (!Storage.openFileForRead("FLASH", sdPath, file) || !file) {
+    LOG_ERR("FLASH", "sha256: open failed: %s", sdPath);
+    return Result::OPEN_FAIL;
+  }
+  auto buf = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[CHUNK]);
+  if (!buf) {
+    file.close();
+    return Result::OOM;
+  }
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);
+  mbedtls_sha256_starts(&sha, /*is224=*/0);
+  const size_t total = file.fileSize();
+  size_t remaining = total;
+  while (remaining > 0) {
+    const size_t want = std::min<size_t>(CHUNK, remaining);
+    const int got = file.read(buf.get(), want);
+    if (got <= 0 || static_cast<size_t>(got) != want) {
+      mbedtls_sha256_free(&sha);
+      file.close();
+      return Result::READ_FAIL;
+    }
+    mbedtls_sha256_update(&sha, buf.get(), want);
+    remaining -= want;
+  }
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&sha, digest);
+  mbedtls_sha256_free(&sha);
+  file.close();
+  static const char hexd[] = "0123456789abcdef";
+  for (int i = 0; i < 32; i++) {
+    outHex[i * 2] = hexd[digest[i] >> 4];
+    outHex[i * 2 + 1] = hexd[digest[i] & 0x0F];
+  }
+  outHex[64] = '\0';
+  return Result::OK;
+}
+
 Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before

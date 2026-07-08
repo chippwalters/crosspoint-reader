@@ -1,6 +1,11 @@
 /**
  * Lightweight Markdown Parser for ESP32
  *
+ * Derived from the papyrix-reader project's lib/Markdown (MIT, (c) Dave Allie) —
+ * the same author as the upstream CrossPoint reader this firmware forks. Adapted
+ * for PaperBit's native on-device Markdown reader. See NOTICE / third-party
+ * attributions in the repo README.
+ *
  * Memory-efficient streaming parser using callbacks.
  * No AST construction - processes text in a single pass.
  *

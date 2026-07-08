@@ -31,7 +31,12 @@ namespace {
 // boot) is ALSO plain http — publish-firmware.ps1 emits http:// browser_download_urls. The
 // device has no firmware signature enforcement anyway (see gen_manifest.py) — image validation
 // + the A/B slots are the rollback safety.
-constexpr char latestReleaseUrl[] = "http://www.widgetgadget.com/cw1/Paperbit/release.json";
+constexpr char defaultReleaseUrl[] = "http://www.widgetgadget.com/cw1/Paperbit/release.json";
+
+// Optional runtime override of the release feed (one trimmed line), so self-hosted / open-source
+// builds can point at their own server without recompiling. Must be a plain-http URL that serves
+// release.json + the .bin without an https redirect (see the design note above).
+constexpr char OTA_URL_FILE[] = "/.crosspoint/ota.url";
 
 // Persisted confirmed-update for the reboot-to-install flow (see OtaUpdater.h).
 constexpr char OTA_PENDING_FILE[] = "/.crosspoint/ota_pending.json";
@@ -41,8 +46,20 @@ esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
 }
 }  // namespace
 
+std::string OtaUpdater::feedUrl() {
+  if (Storage.exists(OTA_URL_FILE)) {
+    String s = Storage.readFile(OTA_URL_FILE);
+    s.trim();
+    if (s.length() > 0 && (s.startsWith("http://") || s.startsWith("https://"))) {
+      return std::string(s.c_str());
+    }
+  }
+  return std::string(defaultReleaseUrl);
+}
+
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+  const std::string url = feedUrl();
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
@@ -50,7 +67,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
   // User-Agent (see HttpDownloader).
   ReleaseJsonParser releaseParser;
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
+  const bool ok = HttpDownloader::fetchUrl(url, [&releaseParser](const uint8_t* data, size_t len) {
     releaseParser.feed(reinterpret_cast<const char*>(data), len);
     return true;
   });
@@ -74,6 +91,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
   latestVersion = releaseParser.getTagName();
   otaUrl = releaseParser.getFirmwareUrl();
+  otaSha256 = releaseParser.getFirmwareSha256();
   otaSize = releaseParser.getFirmwareSize();
   totalSize = otaSize;
   updateAvailable = true;
@@ -221,20 +239,24 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
 // --- Reboot-to-install persistence (see header) ------------------------------------------------
 
-void OtaUpdater::seedUpdate(const std::string& url, const std::string& version, size_t size) {
+void OtaUpdater::seedUpdate(const std::string& url, const std::string& version, size_t size,
+                           const std::string& sha256) {
   otaUrl = url;
   latestVersion = version;
+  otaSha256 = sha256;
   otaSize = size;
   totalSize = size;
   processedSize = 0;
   updateAvailable = true;
 }
 
-bool OtaUpdater::savePending(const std::string& url, const std::string& version, size_t size) {
+bool OtaUpdater::savePending(const std::string& url, const std::string& version, size_t size,
+                            const std::string& sha256) {
   JsonDocument doc;
   doc["url"] = url;
   doc["version"] = version;
   doc["size"] = static_cast<uint32_t>(size);
+  doc["sha256"] = sha256;  // may be empty when the feed omits it
   String json;
   serializeJson(doc, json);
   Storage.mkdir("/.crosspoint");
@@ -243,7 +265,7 @@ bool OtaUpdater::savePending(const std::string& url, const std::string& version,
   return ok;
 }
 
-bool OtaUpdater::loadPending(std::string& url, std::string& version, size_t& size) {
+bool OtaUpdater::loadPending(std::string& url, std::string& version, size_t& size, std::string& sha256) {
   if (!Storage.exists(OTA_PENDING_FILE)) return false;
   const String json = Storage.readFile(OTA_PENDING_FILE);
   if (json.isEmpty()) return false;
@@ -255,6 +277,7 @@ bool OtaUpdater::loadPending(std::string& url, std::string& version, size_t& siz
   url = doc["url"] | std::string("");
   version = doc["version"] | std::string("");
   size = doc["size"] | 0;
+  sha256 = doc["sha256"] | std::string("");
   return !url.empty() && !version.empty();
 }
 

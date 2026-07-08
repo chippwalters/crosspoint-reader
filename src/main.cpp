@@ -17,6 +17,7 @@
 #include <builtinFonts/all.h>
 
 #include <cstring>
+#include <strings.h>  // strcasecmp (OTA sha256 hex compare)
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -27,12 +28,10 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
-#include "Epub/Page.h"                       // TEMP: complete Page type for the verify command's unique_ptr<Page>
-#include "Epub/markdown/MarkdownSection.h"  // TEMP: MD on-device verify command (remove before release)
-#include "WifiCredentialStore.h"     // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
-#include "network/FirmwareFlasher.h" // early-boot pending-OTA install: flash the downloaded image
-#include "network/HttpDownloader.h"  // early-boot pending-OTA install: download the image to SD
-#include "network/OtaUpdater.h"      // early-boot pending-OTA install (+ TEMP CMD:OTAINSTALL driver)
+#include "WifiCredentialStore.h"      // early-boot pending-OTA install: Wi-Fi credentials
+#include "network/FirmwareFlasher.h"  // early-boot pending-OTA install: flash the downloaded image
+#include "network/HttpDownloader.h"   // early-boot pending-OTA install: download the image to SD
+#include "network/OtaUpdater.h"       // early-boot pending-OTA install: pending-file persistence
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "crypto/VaultCrypto.h"
 #include "network/SerialFileTransfer.h"
@@ -324,11 +323,12 @@ void setupDisplayAndFonts(bool seamless = false) {
 // this reboots into the new firmware; on failure it fails LOUD on-screen and continues the
 // normal boot on the current firmware.
 static void maybeRunPendingOta() {
-  std::string url, version;
+  std::string url, version, expectSha;
   size_t size = 0;
-  if (!OtaUpdater::loadPending(url, version, size)) return;
+  if (!OtaUpdater::loadPending(url, version, size, expectSha)) return;
   OtaUpdater::clearPending();  // one-shot BEFORE attempting — a crash can't loop the install
-  LOG_INF("OTA", "Pending install: %s (%u bytes)", version.c_str(), (unsigned)size);
+  LOG_INF("OTA", "Pending install: %s (%u bytes, sha256 %s)", version.c_str(), (unsigned)size,
+          expectSha.empty() ? "absent" : "present");
 
   constexpr char DL_PATH[] = "/.crosspoint/ota_download.bin";
   const int cy = renderer.getScreenHeight() / 2;
@@ -372,20 +372,42 @@ static void maybeRunPendingOta() {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
 
-        // 2. Flash from the SD file (validates the image header + size internally).
-        const auto res = firmware_flash::flashFromSdPath(
-            DL_PATH,
-            +[](size_t written, size_t total, void*) {
-              if (!total) return;
-              const unsigned pct = (unsigned)((uint64_t)written * 100 / total);
-              if (pct != lastPct && pct % 10 == 0) {
-                lastPct = pct;
-                LOG_INF("OTA", "flash %u%%", pct);
-              }
-            },
-            nullptr);
-        ok = (res == firmware_flash::Result::OK);
-        if (!ok) LOG_ERR("OTA", "pending install: flash failed: %s", firmware_flash::resultName(res));
+        // 1b. Trusted-feed integrity: verify the downloaded bytes against the feed-published
+        // sha256 before flashing. Fail loud on mismatch and DON'T flash. Skipped only when the
+        // feed omits the hash (older feeds) — flashFromSdPath still runs its own image-internal
+        // checksum/SHA-trailer validation regardless.
+        bool integrityOk = true;
+        if (!expectSha.empty()) {
+          char gotSha[65];
+          const auto hres = firmware_flash::sha256HexOfFile(DL_PATH, gotSha);
+          if (hres != firmware_flash::Result::OK) {
+            LOG_ERR("OTA", "pending install: sha256 compute failed: %s", firmware_flash::resultName(hres));
+            integrityOk = false;
+          } else if (!expectSha.empty() && strcasecmp(gotSha, expectSha.c_str()) != 0) {
+            LOG_ERR("OTA", "pending install: sha256 MISMATCH feed=%s got=%s", expectSha.c_str(), gotSha);
+            integrityOk = false;
+          } else {
+            LOG_INF("OTA", "pending install: sha256 verified");
+          }
+        }
+
+        // 2. Flash from the SD file (validates the image header + size internally). Skipped if the
+        // feed-sha256 gate above failed — never flash bytes that don't match the published hash.
+        if (integrityOk) {
+          const auto res = firmware_flash::flashFromSdPath(
+              DL_PATH,
+              +[](size_t written, size_t total, void*) {
+                if (!total) return;
+                const unsigned pct = (unsigned)((uint64_t)written * 100 / total);
+                if (pct != lastPct && pct % 10 == 0) {
+                  lastPct = pct;
+                  LOG_INF("OTA", "flash %u%%", pct);
+                }
+              },
+              nullptr);
+          ok = (res == firmware_flash::Result::OK);
+          if (!ok) LOG_ERR("OTA", "pending install: flash failed: %s", firmware_flash::resultName(res));
+        }
       }
       Storage.remove(DL_PATH);  // temp image: remove on success and failure alike
     }
@@ -650,135 +672,6 @@ void loop() {
         logSerial.printf("SCREENSHOT_END\n");
       } else if (cmd.startsWith("FT:")) {
         SerialFileTransfer::handle(cmd);
-      } else if (cmd.startsWith("MDPAGINATE:")) {
-        // TEMP on-device verify of the native-MD pipeline (remove before release).
-        // CMD:MDPAGINATE:/Books/<file>.md → paginate via MarkdownSection, load page 0, render it into
-        // the framebuffer using the REAL reader viewport (margins + status-bar reservation, mirroring
-        // MdReaderActivity::render), then stream the framebuffer exactly like CMD:SCREENSHOT so the host
-        // can capture a true visual of page 0. Reports heap throughout.
-        RenderLock lock;
-        const std::string path(cmd.substring(11).c_str());
-        logSerial.printf("MDTEST_START:%s baseFree=%u\n", path.c_str(), (unsigned)ESP.getFreeHeap());
-        // Real reader viewport: oriented viewable area + screen margin, with the bottom reserving the
-        // larger of the margin and the status-bar height (matches MdReaderActivity::render).
-        int mt, mr, mb, ml;
-        renderer.getOrientedViewableTRBL(&mt, &mr, &mb, &ml);
-        mt += SETTINGS.screenMargin;
-        ml += SETTINGS.screenMargin;
-        mr += SETTINGS.screenMargin;
-        const uint8_t sbh = UITheme::getInstance().getStatusBarHeight();
-        mb += (SETTINGS.screenMargin > sbh) ? SETTINGS.screenMargin : sbh;
-        const uint16_t vw = renderer.getScreenWidth() - ml - mr;
-        const uint16_t vh = renderer.getScreenHeight() - mt - mb;
-        MarkdownSection sec(path, "/.crosspoint/mdtest.bin", renderer);
-        sec.clearCache();
-        const bool ok = sec.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                              SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, vw, vh,
-                                              SETTINGS.hyphenationEnabled, SETTINGS.focusReadingEnabled, nullptr);
-        logSerial.printf("MDTEST_PAGINATE ok=%d pages=%u truncated=%d minFree=%u maxAlloc=%u\n", ok ? 1 : 0,
-                         (unsigned)sec.pageCount, sec.truncated ? 1 : 0, (unsigned)ESP.getMinFreeHeap(),
-                         (unsigned)ESP.getMaxAllocHeap());
-        if (ok && sec.pageCount > 0) {
-          sec.currentPage = 0;
-          auto pg = sec.loadPageFromSectionFile();
-          logSerial.printf("MDTEST_PAGE0 loaded=%d\n", pg ? 1 : 0);
-          if (pg) {
-            // Render page 0 into the framebuffer: font scan/prewarm pass, then the real BW render
-            // (mirrors MdReaderActivity::renderContents, BW only — enough for a screenshot proof).
-            const int fontId = SETTINGS.getReaderFontId();
-            renderer.clearScreen();
-            auto* fcm = renderer.getFontCacheManager();
-            auto scope = fcm->createPrewarmScope();
-            pg->render(renderer, fontId, ml, mt);  // scan pass
-            scope.endScanAndPrewarm();
-            pg->render(renderer, fontId, ml, mt);  // real render into the framebuffer
-            renderer.displayBuffer();              // also show it on the physical panel
-            // Stream the framebuffer (identical framing to CMD:SCREENSHOT).
-            const uint32_t bufferSize = display.getBufferSize();
-            uint8_t* fb = display.getFrameBuffer();
-            logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
-            setSerialLogMuted(true);
-            logSerial.setTxTimeoutMs(200);
-            logSerial.flush();
-            size_t off = 0;
-            unsigned long lastProgress = millis();
-            while (off < bufferSize) {
-              const size_t w = logSerial.write(fb + off, bufferSize - off);
-              if (w > 0) {
-                off += w;
-                lastProgress = millis();
-              } else if (millis() - lastProgress > 5000) {
-                break;
-              }
-              yield();
-            }
-            logSerial.flush();
-            logSerial.setTxTimeoutMs(1);
-            setSerialLogMuted(false);
-            logSerial.printf("SCREENSHOT_END\n");
-          }
-        }
-        logSerial.printf("MDTEST_END\n");
-      } else if (cmd.startsWith("MDTOC:")) {
-        // TEMP: paginate a .md, read back its #/## TOC anchors, render the TOC list (mirrors
-        // MdReaderTocActivity::render, header + list), and stream the framebuffer like SCREENSHOT.
-        // Verifies the anchor serialization round-trip + indentation. Remove before release.
-        RenderLock lock;
-        const std::string path(cmd.substring(6).c_str());
-        logSerial.printf("MDTOC_START:%s\n", path.c_str());
-        int mt, mr, mb, ml;
-        renderer.getOrientedViewableTRBL(&mt, &mr, &mb, &ml);
-        mt += SETTINGS.screenMargin;
-        ml += SETTINGS.screenMargin;
-        mr += SETTINGS.screenMargin;
-        const uint8_t sbh = UITheme::getInstance().getStatusBarHeight();
-        mb += (SETTINGS.screenMargin > sbh) ? SETTINGS.screenMargin : sbh;
-        const uint16_t vw = renderer.getScreenWidth() - ml - mr;
-        const uint16_t vh = renderer.getScreenHeight() - mt - mb;
-        MarkdownSection sec(path, "/.crosspoint/mdtoc.bin", renderer);
-        sec.clearCache();
-        const bool ok = sec.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                              SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, vw, vh,
-                                              SETTINGS.hyphenationEnabled, SETTINGS.focusReadingEnabled, nullptr);
-        auto entries = sec.readAnchors();
-        logSerial.printf("MDTOC_ENTRIES ok=%d count=%u\n", ok ? 1 : 0, (unsigned)entries.size());
-        renderer.clearScreen();
-        auto metrics = UITheme::getInstance().getMetrics();
-        Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-        GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                       "Contents");
-        const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-        const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
-        GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight},
-                     static_cast<int>(entries.size()), 0, [&entries](int i) {
-                       const auto& e = entries[i];
-                       const int d = (e.level > 1) ? (e.level - 1) : 0;
-                       return std::string(static_cast<size_t>(d) * 2, ' ') + e.title;
-                     });
-        renderer.displayBuffer();
-        const uint32_t bufferSize = display.getBufferSize();
-        uint8_t* fb = display.getFrameBuffer();
-        logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
-        setSerialLogMuted(true);
-        logSerial.setTxTimeoutMs(200);
-        logSerial.flush();
-        size_t off = 0;
-        unsigned long lastProgress = millis();
-        while (off < bufferSize) {
-          const size_t w = logSerial.write(fb + off, bufferSize - off);
-          if (w > 0) {
-            off += w;
-            lastProgress = millis();
-          } else if (millis() - lastProgress > 5000) {
-            break;
-          }
-          yield();
-        }
-        logSerial.flush();
-        logSerial.setTxTimeoutMs(1);
-        setSerialLogMuted(false);
-        logSerial.printf("SCREENSHOT_END\n");
-        logSerial.printf("MDTOC_END\n");
       }
     }
   }

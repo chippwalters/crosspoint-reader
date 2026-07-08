@@ -6,8 +6,10 @@
 //   - on-device (the on-screen URL keyboard in PaperbitFetchActivity)
 //   - the Wi-Fi web settings page
 //   - the desktop (Paperbit) client over USB
-// The device fetches <url>/index.json to list documents and <url>/<name>.epub to download
-// them (see paperbit/docs and the convert.php prototype). Plain text keeps every setter trivial.
+// The device tries <url>/index.json to list documents (OPTIONAL) and falls back to the server's
+// directory listing; it then downloads each doc (.md/.epub/.txt/.xtc/.xtch) to /Fetch/ and opens
+// it. Plain-http URL by design (in-session TLS is heap-infeasible on the C3). Plain-text storage
+// keeps every setter trivial. See paperbit/ARCHITECTURE.md §5.5.
 class FetchSourceStore {
  public:
   static FetchSourceStore& getInstance() { return instance; }

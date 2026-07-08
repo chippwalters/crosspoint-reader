@@ -6,6 +6,7 @@ class OtaUpdater {
   bool updateAvailable = false;
   std::string latestVersion;
   std::string otaUrl;
+  std::string otaSha256;  // feed-published sha256 (lowercase hex); empty if the feed omits it
   size_t otaSize = 0;
   size_t processedSize = 0;
   size_t totalSize = 0;
@@ -33,7 +34,13 @@ class OtaUpdater {
   bool isUpdateNewer() const;
   const std::string& getLatestVersion() const;
   const std::string& getOtaUrl() const { return otaUrl; }
+  const std::string& getOtaSha256() const { return otaSha256; }
   OtaUpdaterError checkForUpdate();
+
+  // The release-feed URL the check reads. Defaults to the official Paperbit feed; overridable at
+  // runtime via /.crosspoint/ota.url (one trimmed line) so open-source / self-hosted builds can
+  // point at their own server without recompiling. Plain http:// by design (see OtaUpdater.cpp).
+  static std::string feedUrl();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
 
   // --- Reboot-to-install flow -------------------------------------------------------------
@@ -43,8 +50,9 @@ class OtaUpdater {
   // largest; second fails at ~43 KB). So the confirmed update is persisted to SD and installed
   // at EARLY BOOT, where the handshake is the boot's first (and only) TLS connection.
   // Seed this updater from a persisted pending update (skips checkForUpdate()).
-  void seedUpdate(const std::string& url, const std::string& version, size_t size);
-  static bool savePending(const std::string& url, const std::string& version, size_t size);
-  static bool loadPending(std::string& url, std::string& version, size_t& size);
+  void seedUpdate(const std::string& url, const std::string& version, size_t size, const std::string& sha256 = "");
+  static bool savePending(const std::string& url, const std::string& version, size_t size,
+                          const std::string& sha256);
+  static bool loadPending(std::string& url, std::string& version, size_t& size, std::string& sha256);
   static void clearPending();
 };

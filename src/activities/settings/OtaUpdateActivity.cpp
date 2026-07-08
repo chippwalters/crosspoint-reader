@@ -150,7 +150,8 @@ void OtaUpdateActivity::loop() {
       // the C3 — the check's TLS session fragments the heap and the install's second handshake
       // dies in cert verification (see OtaUpdater.h). Early boot installs with a pristine heap.
       LOG_INF("OTA", "Update confirmed - saving pending install and rebooting");
-      if (!OtaUpdater::savePending(updater.getOtaUrl(), updater.getLatestVersion(), updater.getOtaSize())) {
+      if (!OtaUpdater::savePending(updater.getOtaUrl(), updater.getLatestVersion(), updater.getOtaSize(),
+                                   updater.getOtaSha256())) {
         LOG_ERR("OTA", "Failed to persist pending install");
         {
           RenderLock lock(*this);
