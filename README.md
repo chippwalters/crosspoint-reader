@@ -1,272 +1,200 @@
-# CrossPoint Reader
+# PaperBit
 
-[![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
+**Turn a $60 e-ink reader into a distraction-free Markdown reader and Bluetooth typewriter — with wireless updates.**
 
-CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
+> **Personal project.** I build this for my own use; issues are welcome, response times vary.
+> See [CONTRIBUTING.md](CONTRIBUTING.md) before filing.
 
-**Now running on:** ESP32C3-based Xteink [X4](https://www.xteink.com/products/xteink-x4) and [X3](https://www.xteink.com/products/xteink-x3).
+PaperBit is custom firmware for the **Xteink X4** (and X3) e-ink reader — an ESP32-C3 device with a
+480×800 e-paper panel and physical page buttons. It is a fork of the excellent
+[CrossPoint Reader](https://crosspointreader.com) (MIT, © 2025 Dave Allie) that keeps everything
+CrossPoint does well — EPUB reading, 4-level grayscale, fast partial refresh, OPDS — and adds a
+Markdown-first workflow: read `.md` files natively on-device, pull them over Wi-Fi from any folder
+you control, and write new ones on a Bluetooth keyboard.
 
-![CrossPoint Reader running on Xteink device](./docs/images/cover.jpg)
+![Home screen](docs/images/home.png)
 
-## What can CrossPoint do?
+## Features
 
-- **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling, hyphenation, kerning, chapter navigation, footnotes, bookmarks, go-to-percent, auto page turn, orientation control, focus reading, KOReader progress sync and more. 
+- **Native Markdown reader** — open `.md` files directly on the device. No conversion, no companion
+  app required. Streaming parser, book-style pagination, reading position saved and restored.
+- **Table of contents** — every `#` and `##` heading becomes a TOC entry; press Open while reading
+  to jump to any section.
+- **Paperbit Fetch** — point the device at any web folder (a plain HTTP directory) and pull
+  documents over Wi-Fi: shopping lists, daily digests, saved articles. An `index.json` is
+  optional — a bare Apache directory listing works.
+- **Notes: a Bluetooth typewriter** — pair a BLE keyboard once, then type plain-Markdown notes that
+  save continuously as you go. Typewriter model: append, Backspace, Enter. Notes are ordinary `.md`
+  files, so every note is also a readable document.
+- **Wireless OTA updates** — check for updates from Settings; the device restarts, installs with
+  on-screen progress, and boots the new version. Dual A/B firmware slots mean a failed update
+  leaves the old firmware bootable.
+- **My Vault** — PIN-protected notes, AES-256-GCM encrypted on the SD card.
+- **Everything CrossPoint has** — EPUB / TXT / XTC reading, 4-level grayscale, tiered refresh,
+  Wi-Fi file transfer (browser + WebDAV), OPDS library support, custom fonts and sleep screens.
+- **USB file-transfer protocol** — a `CMD:FT:*` serial protocol for host tooling: full SD
+  filesystem access, CRC-checked transfers, and brick-safe firmware install over the cable alone.
 
-- **Various formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt`, and `.bmp`.
+## Supported hardware
 
-- **Screenshots.**
+| Device | Panel | Notes |
+|---|---|---|
+| Xteink **X4** | SSD1677, 480×800 | Primary target |
+| Xteink **X3** | UC81xx, 528×792 | Supported — one universal binary, hardware detected at boot |
 
-- **Custom fonts**: install your favorite fonts on the SD card.
+Both are ESP32-C3 (no PSRAM, ~380 KB total heap). That constraint shapes the whole design: no DOM,
+streamed parsing, banded rendering, hard caps, pages serialized to SD.
 
-- **Tilt page turn (X3 only)**.
+## Quick start
 
-- **Library workflow**: folder browser, hidden-file toggle, long-press delete, recent books, SD-cache management.
+1. **Flash the firmware** — see [FLASHING.md](FLASHING.md). If your device already runs CrossPoint
+   or PaperBit, the easiest path is copying `firmware.bin` to the SD card and using
+   Settings → System → SD Firmware Update.
+2. **Join Wi-Fi** — Settings → Wi-Fi. (The ESP32-C3 is 2.4 GHz only.)
+3. **Get content on it:**
+   - Drop `.md` / `.epub` / `.txt` files on the SD card, or
+   - Use the **Paperbit desktop app** over USB, or the device's **File transfer** mode from a
+     browser, or
+   - Set a **Paperbit Fetch** source URL and pull documents over Wi-Fi (see below).
+4. **Type:** pair a BLE keyboard in Settings → Keyboard, then open **Notes** from Home.
 
-- **Wireless workflows**:
-  
-  - File transfer web UI
-  - EPUB Optimizer
-  - Web settings UI/API (edit many device settings from browser)
-  - WebSocket fast uploads
-  - WebDAV handler
-  - AP mode (hotspot) and STA mode (join existing Wi-Fi), both with QR helpers
-  - Calibre wireless connect flow
-  - OPDS browser with saved servers (up to 8), search, pagination, and direct download
-  - OTA update checks and installs from GitHub releases
+### Setting up Paperbit Fetch
 
-- **Customization**: multiple themes (Classic, Lyra, Lyra Extended, RoundedRaff), sleep screen modes, front/side button remapping, status bar controls, power-button behavior, refresh cadence, and more.
+Fetch pulls from a single folder URL you control. Any web server that serves a directory listing
+over plain HTTP works — see [SERVER-KIT.md](SERVER-KIT.md) for a complete self-hosting guide
+(folder layout, optional `index.json`, the OTA release feed, and the capture write API).
 
-- **Localization**: 24 UI languages and counting. RTL support.
+Set the URL from the desktop app (Settings → device Fetch URL), from the device's web Settings
+page, or on-device via Paperbit Fetch → Set source URL. Then open **Paperbit Fetch** from Home,
+pick a document, and it downloads and opens. Supported: `.md`, `.epub`, `.txt`, `.xtc`.
 
-### Coming soon:
+## What the Markdown reader renders
 
-- Dictionary lookup — inline word lookup without leaving the reader.
+Headings (bold, centered; `#`/`##` feed the TOC), **bold** / *italic* / ~~strikethrough~~, bulleted
+and numbered lists, blockquotes, horizontal rules, and links (the label is underlined; the URL is
+printed as a page footnote).
 
-- More themes.
+Current limits — stated so you don't have to discover them:
 
-- Much more! stay tuned.
+- Headings are one size (no size hierarchy yet — this needs new font-size engine work).
+- Inline and fenced code render in *italic* (no monospace face yet).
+- Images show as an `[Image: alt]` placeholder in Markdown (EPUB images render normally).
+- Task-list checkboxes show as literal `[ ]` / `[x]` text, not interactive controls.
 
----
+Oversized or unsupported content **fails loud**: you get a visible marker or a "Content truncated"
+notice, never a silent blank page.
 
-## USB-locked devices (Xteink Unlocker)
+## Security posture — read this before filing the HTTPS issue
 
-Some Xteink units purchased from third-party stores (e.g. AliExpress) ship with USB flashing locked from the factory.
-If your device is locked, you will need to use the **Xteink Unlocker** tool available at
-https://crosspointreader.com/#unlock-tool before you can flash CrossPoint.
+**Device-side HTTP is plain `http://` by design.** This is a deliberate, measured decision, not an
+oversight:
 
-**You do not need this tool if you bought your device directly from xteink.com.** Those units are not locked.
+- The ESP32-C3 in this firmware has roughly **30–45 KB** as its largest contiguous free heap block
+  mid-session. mbedTLS (as compiled into the precompiled Arduino cores, not tunable at runtime)
+  needs **16 KB + 16 KB contiguous I/O buffers** for a TLS session. In-session TLS is structurally
+  infeasible on this hardware with this feature set — it fails, reproducibly, on real devices.
+- **Therefore your server must serve the Fetch folder and the OTA feed over plain HTTP, without
+  redirecting to HTTPS.** An `http→https` redirect breaks the device. (Browsers and the desktop
+  app can keep using HTTPS on the same host.)
 
-**Not sure if your device is locked?** Power it on, connect the USB-C cable, and try flashing via the web flasher first (see
-[Install firmware](#install-firmware) below). If the browser's serial device picker does not show your device, try a different
-USB port or browser before assuming the device is locked. Only reach for the unlocker if the device still doesn't appear.
+**Threat model: a trusted LAN and a server you control.** On an untrusted network, anyone in a
+position to intercept your HTTP traffic can see what the device fetches and could tamper with it.
+What protects the update path specifically:
 
-> ### ⚠️ WARNING: READ THIS BEFORE USING THE UNLOCKER ⚠️
-> 
-> **The only officially supported firmwares in the unlock tool are CrossPoint and CrossInk.**
-> 
-> Flashing any other firmware on a USB-locked device may **permanently brick the device** or leave it **permanently
-> stuck on that firmware with no recovery path**. Once USB flashing is re-locked, your only way back is via OTA, and if
-> the firmware you flashed doesn't support OTA, **there is no way out**.
-> 
-> **The Papyrix fork has removed OTA update support from its code.** If you flash Papyrix onto a
-> USB-locked unit, you will have **zero update or recovery path** and will be stuck on it forever. **Do not flash
-> Papyrix (or any other unsupported firmware) on a locked device.**
+- Every firmware image is **validated before flashing** (magic bytes, structure, size, SHA-256).
+- **Dual A/B slots** — the running firmware, bootloader, and partition table are never touched;
+  a failed or tampered install leaves the old firmware bootable.
+- The device's version gate only accepts a release whose `major.minor.patch` is newer.
+- **SHA-256 verification against the release feed** (since 1.4.17): the downloaded image is hashed
+  and compared to the feed-published `sha256` before flashing; a mismatch refuses to install.
 
-## Install firmware
+Content you fetch is your own Markdown; the Vault is AES-256-GCM encrypted at rest regardless of
+transport. If your threat model includes a hostile local network, don't point the device at it.
 
-### Web installer (recommended)
+## Updating
 
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Go to https://crosspointreader.com/#flash-tools, select device (X3 or X4), and choose an official CrossPoint release.
+- **Wireless:** Settings → Check for updates. The device fetches the release feed, restarts, and
+  installs with on-screen progress ("reboot-to-install" — the download and flash happen at early
+  boot while the heap is pristine). Failures are shown on-screen and the device boots the current
+  version.
+- **From a computer:** the Paperbit desktop app installs firmware over USB with a validated
+  manifest (SHA-256, size, target device) — no Wi-Fi needed.
 
-### Web installer (specific version)
+## Building from source
 
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Download a `firmware.bin` from [Releases](https://github.com/crosspoint-reader/crosspoint-reader/releases), local build, or continuous integration artifact.
-3. Go to https://crosspointreader.com/#flash-tools, select device (X3 or X4), click "Custom .bin" and upload a `firmware.bin`.
+Requirements: [PlatformIO](https://platformio.org/) (CLI or IDE), Git.
 
-### Revert to Official Firmware
+```powershell
+# PaperBit lives on the `paperbit` branch of this fork; --recursive pulls the open-x4-sdk submodule
+git clone --recursive -b paperbit https://github.com/chippwalters/crosspoint-reader.git
+cd crosspoint-reader
 
-To revert to the official firmware, you can also flash the latest official firmware using https://crosspointreader.com/#flash-tools.
+# Windows only — REQUIRED, or the build silently appears to hang (cp1252 decode):
+$env:PYTHONUTF8 = '1'
 
-### Command line
-
-1. Install [`esptool`](https://github.com/espressif/esptool):
-
-```bash
-pip install esptool
+pio run -e default        # standard build (serial logging on)
+pio run -e ble            # Notes / BLE keyboard build — the shipped flavor
 ```
 
-2. Download `firmware.bin` from the [releases page](https://github.com/crosspoint-reader/crosspoint-reader/releases).
-3. Connect your device via USB-C.
-4. Find the device port. On Linux, run `dmesg` after connecting. On macOS:
-
 ```bash
-log stream --predicate 'subsystem == "com.apple.iokit"' --info
+# macOS / Linux
+export PYTHONUTF8=1       # harmless outside Windows; the hang is a Windows code-page issue
+pio run -e ble
 ```
 
-5. Flash:
+| Env | What it is |
+|---|---|
+| `default` | Daily build — serial log on, no BLE |
+| `ble` | `-DENABLE_BLE_KEYBOARD` + NimBLE-Arduino — Notes and keyboard pairing. **The shipped flavor.** |
+| `slim` | Smallest build, serial log off |
 
-```bash
-esptool.py --chip esp32c3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
+Artifacts land in `.pio/build/<env>/firmware.bin` (app image, offset `0x10000`), with a
+`firmware.manifest.json` emitted next to it by a post-build script. Flash over USB with:
+
+```powershell
+pio run -e ble -t upload --upload-port COM7        # Windows
 ```
 
-Adjust `/dev/ttyACM0` to match your system.
+```bash
+pio run -e ble -t upload --upload-port /dev/ttyACM0   # Linux/macOS
+```
 
-### Manual
-
-See [Development quick start](#development-quick-start) below.
-
----
-
-## Custom SD-card fonts
-
-Convert your own TTF/OTF files into `.cpfont` files that load from the SD card. No firmware reflash is needed.
-
-1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
-2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name, point sizes, and Unicode range.
-3. Download the generated `.cpfont` files.
-4. Copy them to your SD card under `/fonts/YourFont/` (or `/.fonts/YourFont/` to hide the folder).
-5. Select the font on the device from the font settings.
-
-Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` script unmodified, so output matches a local host build.
-
----
+The device enumerates as a native USB-Serial/JTAG CDC port (no driver needed on modern OSes).
+Serial monitor is 115200 baud. Note: deep sleep removes the USB port entirely — wake the device
+if it disappears.
 
 ## Documentation
 
-- [User Guide](./USER_GUIDE.md)
-- [Web server usage](./docs/webserver.md)
-- [Web server endpoints](./docs/webserver-endpoints.md)
-- [Project scope](./SCOPE.md)
-- [Contributing docs](./docs/contributing/README.md)
+The full **user manual** ships in this repo: [`docs/manual/PAPERBIT-MANUAL.md`](docs/manual/PAPERBIT-MANUAL.md)
+— buttons & navigation, every format, Fetch, Notes, settings, updating, troubleshooting. (It's
+also readable on the device itself as *PaperBit Manual*.) Third-party attributions: [`NOTICE.md`](NOTICE.md).
 
----
+## Companion apps
 
-## Development quick start
+- **[Paperbit (desktop)](https://github.com/chippwalters/x4-client)** — Windows companion
+  (Electron, portable ZIP): USB transfer and conversion (including PDF→EPUB), whole-device
+  backup/restore, firmware install over the cable, sleep screens, device screenshots.
+- **[PaperBit Capture](https://github.com/chippwalters/x4-mobile)** (Android) — share or paste
+  from any app, convert to Markdown, publish straight into your Fetch folder.
 
-### Prerequisites
+## Attribution
 
-- [pioarduino](https://github.com/pioarduino/pioarduino) or VS Code + pioarduino plugin
-- Python 3.8+
-- `clang-format` 21
-- USB-C cable supporting data transfer
+PaperBit stands on other people's good work:
 
-### Setup
+- **[CrossPoint Reader](https://crosspointreader.com)** — Dave Allie (MIT). The base firmware:
+  the EPUB layout engine, grayscale + refresh system, UI framework, display drivers, web server,
+  OPDS, and OTA. PaperBit is a fork, not a rewrite.
+- **papyrix-reader `lib/Markdown`** — Dave Allie (MIT, same author). The streaming Markdown
+  tokenizer (`md_parser`) vendored as the base of the native reader. It is a hand-rolled parser —
+  not md4c.
+- **MicroSlate firmware** — Josh-writes (MIT). Reference for the BLE keyboard host
+  (`BleKeyboardManager` was ported from it).
+- **[NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino)** — h2zero (Apache-2.0). The BLE
+  stack behind Notes.
+- **open-x4-sdk** — the Xteink community SDK (display/HAL primitives), vendored as a forked
+  submodule.
 
-```bash
-git clone --recursive https://github.com/crosspoint-reader/crosspoint-reader
-cd crosspoint-reader
+## License
 
-# if cloned without --recursive:
-git submodule update --init --recursive
-```
-
-### Build / flash / monitor
-
-```bash
-pio run --target upload
-```
-
-### Contributor pre-PR checks
-
-```bash
-./bin/clang-format-fix
-pio check -e default
-pio run -e default
-```
-
-### Debugging
-
-After flashing the new features, it’s recommended to capture detailed logs from the serial port.
-
-First, make sure all required Python packages are installed:
-
-```python
-python3 -m pip install pyserial colorama matplotlib
-```
-
-After that run the script:
-
-```sh
-# For Linux
-# This was tested on Debian and should work on most Linux systems.
-python3 scripts/debugging_monitor.py
-
-# For macOS
-python3 scripts/debugging_monitor.py /dev/cu.usbmodem2101
-```
-
-Minor adjustments may be required for Windows.
-
----
-
-## Internals
-
-CrossPoint Reader is pretty aggressive about caching data down to the SD card to minimise RAM usage. The ESP32-C3 only has ~380KB of usable RAM, so we have to be careful. A lot of the decisions made in the design of the firmware were based on this constraint.
-
-### Data caching
-
-The first time chapters of a book are loaded, they are cached to the SD card. Subsequent loads are served from the
-cache. This cache directory exists at `.crosspoint` on the SD card. The structure is as follows:
-
-```text
-.crosspoint/
-├── epub_<hash>/         # one directory per book, named by content hash
-│   ├── progress.bin     # reading position (chapter, page, etc.)
-│   ├── cover.bmp        # generated cover image
-│   ├── book.bin         # metadata: title, author, spine, TOC
-│   ├── css_rules.cache  # parsed CSS rule cache
-│   ├── img_*            # rendered image cache files
-│   └── sections/        # per-chapter layout cache
-│       ├── 0.bin
-│       ├── 1.bin
-│       └── ...
-├── settings.json        # device settings
-├── state.json           # resume/runtime state
-└── recent.json          # recent books list
-```
-
-Removing `/.crosspoint` clears all cached metadata and forces a full regeneration on next open. Book deletes, overwrites, and moves done through the firmware or web UI clear or re-key matching caches; manual SD-card edits may leave stale cache directories behind.
-
-For more details on the internal file structures, see the [file formats document](./docs/file-formats.md).
-
----
-
-## Contributing
-
-Contributions are welcome. If you're new to the codebase, start with the [contributing docs](./docs/contributing/README.md). For things to work on, check the [ideas discussion board](https://github.com/crosspoint-reader/crosspoint-reader/discussions/categories/ideas) — leave a comment before starting so we don't duplicate effort.
-
-Everyone here is a volunteer, so please be respectful and patient. For governance and community expectations, see [GOVERNANCE.md](./GOVERNANCE.md).
-
----
-
-## Community forks
-
-One of the best things about open source is that anyone can take the code in a different direction. If you need something outside CrossPoint's [scope](./SCOPE.md), check out the community forks:
-
-- [CrossInk](https://github.com/uxjulia/CrossInk) — Typography and reading tracking: Bionic Reading (bolds word stems to create fixation points), guide dots between words, improved paragraph indents, and replaces the default fonts with ChareInk/Lexend/Bitter.
-
-- [papyrix-reader](https://github.com/bigbag/papyrix-reader) — Adds FB2 and MD format support. Actively maintained with Arabic script support. Custom themes via SD card.
-
-- [crosspet](https://github.com/trilwu/crosspet) — A Vietnamese fork that adds a Tamagotchi-style virtual chicken that grows based on your reading milestones (pages read, streaks, care). Also: Flashcards, Weather, Pomodoro timer, and mini-games.
-
-- [crosspoint-reader-cjk](https://github.com/aBER0724/crosspoint-reader-cjk) — Purpose-built for Chinese, Japanese, and Korean reading.
-
-- [inx](https://github.com/obijuankenobiii/inx) — Completely reimagines the user interface with tabbed navigation.
-
-- ~~[PlusPoint](https://github.com/ngxson/pluspoint-reader) — custom JS apps support.~~ (Unmaintained)
-
-- [crosspoint-reader-papers3](https://github.com/juicecultus/crosspoint-reader-papers3) — Crosspoint port for M5Stack Paper S3. 
-
-- [t5s3-reader](https://github.com/ShallowGreen123/t5s3-reader) — Crosspoint port for LilyGo T5 ePaper S3 / T5S3 4.7-inch e-paper device.
-
-**Note:** Many of these features will make their way into CrossPoint over time. We maintain a slower pace to ensure rock-solid stability and squash bugs before they reach your device.
-
-Want to build your own device? Be sure to check out the [de-link](https://github.com/iandchasse/de-link) project.
-
----
-
-CrossPoint Reader is **not affiliated with Xteink or any device manufacturer**.
-
-Huge shoutout to [diy-esp32-epub-reader](https://github.com/atomic14/diy-esp32-epub-reader), which inspired this project.
+MIT — the same license as upstream CrossPoint Reader. See [LICENSE](LICENSE).
+PaperBit's additions are © their contributors and released under the same terms.
