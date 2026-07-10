@@ -5,6 +5,8 @@
 > **Personal project.** I build this for my own use; issues are welcome, response times vary.
 > See [CONTRIBUTING.md](CONTRIBUTING.md) before filing.
 
+![PaperBit — native Markdown reading, Paperbit Fetch, Notes, wireless updates, encrypted Vault, and everything CrossPoint does](docs/images/paperbit-features.png)
+
 PaperBit is custom firmware for the **Xteink X4** (and X3) e-ink reader — an ESP32-C3 device with a
 480×800 e-paper panel and physical page buttons. It is a fork of the excellent
 [CrossPoint Reader](https://crosspointreader.com) (MIT, © 2025 Dave Allie) that keeps everything
